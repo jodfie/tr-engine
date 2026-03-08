@@ -1,7 +1,6 @@
 package api
 
 import (
-	"io"
 	"net/http"
 	"strconv"
 
@@ -95,8 +94,8 @@ func (h *AdminHandler) SubmitBackfill(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var body BackfillFiltersData
-	if r.ContentLength != 0 {
-		if err := DecodeJSON(r, &body); err != nil && err != io.EOF {
+	if r.ContentLength > 0 {
+		if err := DecodeJSON(r, &body); err != nil {
 			WriteErrorWithCode(w, http.StatusBadRequest, ErrInvalidBody, "invalid request body")
 			return
 		}
@@ -145,7 +144,7 @@ func (h *AdminHandler) CancelBackfill(w http.ResponseWriter, r *http.Request) {
 	if idStr := chi.URLParam(r, "id"); idStr != "" {
 		var err error
 		id, err = strconv.Atoi(idStr)
-		if err != nil {
+		if err != nil || id <= 0 {
 			WriteError(w, http.StatusBadRequest, "invalid job id")
 			return
 		}
