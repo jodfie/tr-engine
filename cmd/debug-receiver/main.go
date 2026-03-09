@@ -16,10 +16,12 @@ import (
 )
 
 var (
-	outputDir  = "/data/tr-engine/debug-reports"
-	listenAddr = ":8090"
-	webhookURL = ""
-	maxBody    = int64(1 << 20) // 1 MB
+	outputDir      = "/data/tr-engine/debug-reports"
+	uploadDir      = "/data/tr-engine/debug-uploads"
+	listenAddr     = ":8090"
+	webhookURL     = ""
+	maxBody        = int64(1 << 20)       // 1 MB for JSON reports
+	maxUpload      = int64(50 << 20)      // 50 MB for file uploads
 )
 
 type rateLimiter struct {
@@ -48,6 +50,21 @@ func extractIP(r *http.Request) string {
 	}
 	host, _, _ := net.SplitHostPort(r.RemoteAddr)
 	return host
+}
+
+func notifyDiscordUpload(ip, filename string, size int64) {
+	if webhookURL == "" {
+		return
+	}
+	sizeMB := float64(size) / (1024 * 1024)
+	msg := fmt.Sprintf("<@139209424953802752> **File uploaded**\nFrom: `%s`\nFile: `%s`\nSize: %.2f MB", ip, filename, sizeMB)
+	payload, _ := json.Marshal(map[string]string{"content": msg})
+	resp, err := http.Post(webhookURL, "application/json", bytes.NewReader(payload))
+	if err != nil {
+		log.Printf("discord webhook error: %v", err)
+		return
+	}
+	resp.Body.Close()
 }
 
 func notifyDiscord(ip, filename string, body []byte) {
@@ -91,8 +108,15 @@ func main() {
 		webhookURL = wh
 	}
 
+	if dir := os.Getenv("UPLOAD_DIR"); dir != "" {
+		uploadDir = dir
+	}
+
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		log.Fatalf("failed to create output dir %s: %v", outputDir, err)
+	}
+	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+		log.Fatalf("failed to create upload dir %s: %v", uploadDir, err)
 	}
 
 	rl := &rateLimiter{times: make(map[string]time.Time)}
@@ -144,6 +168,115 @@ func main() {
 		go notifyDiscord(ip, filename, body)
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"ok":true}`))
+	})
+
+	mux.HandleFunc("/upload", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		r.Body = http.MaxBytesReader(w, r.Body, maxUpload)
+		if err := r.ParseMultipartForm(maxUpload); err != nil {
+			http.Error(w, "file too large (50 MB max)", http.StatusRequestEntityTooLarge)
+			return
+		}
+
+		ip := extractIP(r)
+		ts := time.Now().UTC().Format("2006-01-02T15-04-05")
+
+		var saved []string
+		for _, headers := range r.MultipartForm.File {
+			for _, fh := range headers {
+				src, err := fh.Open()
+				if err != nil {
+					continue
+				}
+
+				// Sanitize filename: keep only the base name
+				origName := filepath.Base(fh.Filename)
+				filename := fmt.Sprintf("%s_%s_%s", ts, strings.ReplaceAll(ip, ":", "-"), origName)
+				path := filepath.Join(uploadDir, filename)
+
+				dst, err := os.Create(path)
+				if err != nil {
+					src.Close()
+					log.Printf("failed to create file: %v", err)
+					continue
+				}
+
+				n, err := io.Copy(dst, src)
+				src.Close()
+				dst.Close()
+				if err != nil {
+					log.Printf("failed to write file: %v", err)
+					continue
+				}
+
+				log.Printf("saved upload from %s → %s (%d bytes)", ip, filename, n)
+				go notifyDiscordUpload(ip, filename, n)
+				saved = append(saved, filename)
+			}
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"ok":    len(saved) > 0,
+			"files": saved,
+		})
+	})
+
+	// Simple upload page
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte(`<!DOCTYPE html>
+<html><head><title>Debug Upload</title>
+<style>
+body { font-family: system-ui; max-width: 600px; margin: 60px auto; padding: 0 20px; background: #1a1a2e; color: #e0e0e0; }
+h1 { color: #fff; }
+form { margin: 20px 0; padding: 20px; border: 1px dashed #444; border-radius: 8px; }
+input[type=file] { margin: 10px 0; }
+button { background: #0f3460; color: #fff; border: none; padding: 10px 24px; border-radius: 4px; cursor: pointer; font-size: 16px; }
+button:hover { background: #16498a; }
+#status { margin-top: 15px; }
+.ok { color: #4ecca3; } .err { color: #e74c3c; }
+</style></head><body>
+<h1>tr-engine Debug Upload</h1>
+<p>Upload PCM captures, logs, or other debug files (50 MB max per file).</p>
+<form id="f" enctype="multipart/form-data">
+  <input type="file" name="files" multiple><br>
+  <button type="submit">Upload</button>
+  <div id="status"></div>
+</form>
+<script>
+document.getElementById('f').onsubmit = function(e) {
+  e.preventDefault();
+  var fd = new FormData(this);
+  var st = document.getElementById('status');
+  st.textContent = 'Uploading...';
+  st.className = '';
+  fetch('upload', { method: 'POST', body: fd })
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      if (d.ok) { st.textContent = 'Uploaded: ' + d.files.join(', '); st.className = 'ok'; }
+      else { st.textContent = 'No files uploaded'; st.className = 'err'; }
+    })
+    .catch(function(e) { st.textContent = 'Error: ' + e.message; st.className = 'err'; });
+};
+</script>
+</body></html>`))
 	})
 
 	log.Printf("debug-receiver listening on %s, writing to %s", listenAddr, outputDir)
