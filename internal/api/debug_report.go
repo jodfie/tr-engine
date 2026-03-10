@@ -1,9 +1,19 @@
 package api
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
+	"time"
 
+	"github.com/rs/zerolog"
 	"github.com/snarg/tr-engine/internal/config"
+	"github.com/snarg/tr-engine/internal/database"
 )
 
 // sanitizeConfig returns a map of all config fields with secrets redacted
@@ -167,4 +177,230 @@ func sanitizeURL(raw string) string {
 	}
 	u.User = nil
 	return u.String()
+}
+
+// MQTTStatus provides MQTT connection state for the debug report handler.
+type MQTTStatus interface {
+	IsConnected() bool
+}
+
+// DebugReportHandler handles POST /api/v1/debug-report requests.
+type DebugReportHandler struct {
+	db            *database.DB
+	cfg           *config.Config
+	live          LiveDataSource
+	audioStreamer AudioStreamer
+	log           zerolog.Logger
+	version       string
+	startTime     time.Time
+	mqtt          MQTTStatus
+	forwardURL    string
+	trConfigPath  string
+}
+
+// DebugReportOptions configures a DebugReportHandler.
+type DebugReportOptions struct {
+	DB            *database.DB
+	Config        *config.Config
+	Live          LiveDataSource
+	AudioStreamer AudioStreamer
+	MQTT          MQTTStatus
+	Log           zerolog.Logger
+	Version       string
+	StartTime     time.Time
+}
+
+// NewDebugReportHandler creates a new debug report handler.
+func NewDebugReportHandler(opts DebugReportOptions) *DebugReportHandler {
+	h := &DebugReportHandler{
+		db:           opts.DB,
+		cfg:          opts.Config,
+		live:         opts.Live,
+		audioStreamer: opts.AudioStreamer,
+		log:          opts.Log,
+		version:      opts.Version,
+		startTime:    opts.StartTime,
+		mqtt:         opts.MQTT,
+		forwardURL:   opts.Config.DebugReportURL,
+	}
+	if opts.Config.TRDir != "" {
+		h.trConfigPath = filepath.Join(opts.Config.TRDir, "config.json")
+	}
+	return h
+}
+
+// Submit handles POST /api/v1/debug-report.
+func (h *DebugReportHandler) Submit(w http.ResponseWriter, r *http.Request) {
+	if h.forwardURL == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte(`{"error":"debug reports disabled"}`))
+		return
+	}
+
+	// Read client body with 1MB limit
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":"failed to read request body"}`))
+		return
+	}
+
+	var clientData map[string]any
+	if err := json.Unmarshal(body, &clientData); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte(`{"error":"invalid JSON"}`))
+		return
+	}
+
+	// Build combined report
+	report := map[string]any{
+		"timestamp":      time.Now().UTC().Format(time.RFC3339),
+		"report_type":    "debug_report",
+		"version":        h.version,
+		"uptime_seconds": int64(time.Since(h.startTime).Seconds()),
+		"client":         clientData,
+		"server":         h.collectServerData(r.Context()),
+	}
+
+	reportJSON, err := json.Marshal(report)
+	if err != nil {
+		h.log.Error().Err(err).Msg("failed to marshal debug report")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":"failed to build report"}`))
+		return
+	}
+
+	// Forward to debug receiver
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, h.forwardURL, bytes.NewReader(reportJSON))
+	if err != nil {
+		h.log.Error().Err(err).Msg("failed to create forward request")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte(`{"error":"failed to forward report"}`))
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		h.log.Error().Err(err).Str("url", h.forwardURL).Msg("failed to forward debug report")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte(`{"error":"failed to forward report"}`))
+		return
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		h.log.Warn().Int("status", resp.StatusCode).Msg("debug receiver returned non-2xx")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte(`{"error":"debug receiver rejected report"}`))
+		return
+	}
+
+	h.log.Info().Msg("debug report forwarded successfully")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"ok":true}`))
+}
+
+// collectServerData gathers server-side diagnostics for the debug report.
+func (h *DebugReportHandler) collectServerData(ctx context.Context) map[string]any {
+	data := map[string]any{
+		"config":         sanitizeConfig(h.cfg),
+		"environment":    collectEnvironment(),
+		"mqtt_connected": h.mqtt != nil && h.mqtt.IsConnected(),
+	}
+
+	if h.live != nil {
+		data["tr_instances"] = h.live.TRInstanceStatus()
+		data["ingest_metrics"] = h.live.IngestMetrics()
+		data["watcher_status"] = h.live.WatcherStatus()
+		data["transcription_status"] = h.live.TranscriptionStatus()
+		data["transcription_queue"] = h.live.TranscriptionQueueStats()
+		data["maintenance"] = h.live.MaintenanceStatus()
+	}
+
+	if h.audioStreamer != nil {
+		data["audio_stream"] = h.audioStreamer.AudioStreamStatus()
+		data["audio_jitter"] = h.audioStreamer.AudioJitterStats()
+	}
+
+	if h.db != nil {
+		stat := h.db.Pool.Stat()
+		data["database_pool"] = map[string]any{
+			"max_conns":           stat.MaxConns(),
+			"total_conns":         stat.TotalConns(),
+			"acquired_conns":     stat.AcquiredConns(),
+			"idle_conns":         stat.IdleConns(),
+			"empty_acquire_count": stat.EmptyAcquireCount(),
+		}
+		data["console_messages"] = h.queryConsoleLogs(ctx)
+	}
+
+	if h.trConfigPath != "" {
+		if trCfg := h.readTRConfig(); trCfg != nil {
+			data["tr_config"] = trCfg
+		}
+	}
+
+	return data
+}
+
+// queryConsoleLogs fetches recent warn/error console messages from the last hour.
+func (h *DebugReportHandler) queryConsoleLogs(ctx context.Context) any {
+	oneHourAgo := time.Now().Add(-1 * time.Hour)
+
+	warnSev := "warn"
+	warnMsgs, _, err := h.db.ListConsoleMessages(ctx, database.ConsoleMessageFilter{
+		Severity:  &warnSev,
+		StartTime: &oneHourAgo,
+		Limit:     200,
+	})
+	if err != nil {
+		h.log.Debug().Err(err).Msg("failed to query warn console messages")
+		return nil
+	}
+
+	errorSev := "error"
+	errorMsgs, _, err := h.db.ListConsoleMessages(ctx, database.ConsoleMessageFilter{
+		Severity:  &errorSev,
+		StartTime: &oneHourAgo,
+		Limit:     200,
+	})
+	if err != nil {
+		h.log.Debug().Err(err).Msg("failed to query error console messages")
+		return nil
+	}
+
+	combined := make([]database.ConsoleMessageAPI, 0, len(warnMsgs)+len(errorMsgs))
+	combined = append(combined, warnMsgs...)
+	combined = append(combined, errorMsgs...)
+
+	if len(combined) == 0 {
+		return nil
+	}
+	return combined
+}
+
+// readTRConfig reads and parses the trunk-recorder config.json file.
+func (h *DebugReportHandler) readTRConfig() any {
+	data, err := os.ReadFile(h.trConfigPath)
+	if err != nil {
+		return nil
+	}
+	var parsed any
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return nil
+	}
+	return parsed
 }

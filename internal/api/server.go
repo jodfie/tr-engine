@@ -88,6 +88,21 @@ func NewServer(opts ServerOptions) *Server {
 		r.Get("/metrics", promhttp.Handler().ServeHTTP)
 	}
 
+	// Debug report endpoint (no auth — consent shown on page)
+	if opts.Config.DebugReportURL != "" {
+		debugReport := NewDebugReportHandler(DebugReportOptions{
+			DB:           opts.DB,
+			Config:       opts.Config,
+			Live:         opts.Live,
+			AudioStreamer: opts.AudioStreamer,
+			MQTT:         opts.MQTT,
+			Log:          opts.Log,
+			Version:      opts.Version,
+			StartTime:    opts.StartTime,
+		})
+		r.Post("/api/v1/debug-report", debugReport.Submit)
+	}
+
 	// Web auth bootstrap — returns the token for web UI pages.
 	// No file extension in the URL so CDNs (Cloudflare) won't cache it.
 	if opts.Config.AuthToken != "" {
