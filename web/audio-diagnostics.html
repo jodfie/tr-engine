@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <script src="auth.js?v=1"></script>
   <meta name="card-title" content="Audio Diagnostics">
-  <meta name="card-description" content="Real-time jitter analysis and debug reporting">
+  <meta name="card-description" content="Live audio playback with jitter analysis and debug reporting">
   <meta name="card-order" content="12">
   <title>Audio Diagnostics — tr-engine</title>
 
@@ -41,7 +41,7 @@
     /* ── Summary cards ─────────────────────────── */
     .summary-row {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
       gap: 12px;
       margin-bottom: 24px;
     }
@@ -102,6 +102,13 @@
       font-weight: 600;
     }
     .btn.primary:hover { opacity: 0.9; }
+    .btn.danger {
+      background: var(--danger);
+      color: #fff;
+      border-color: var(--danger);
+      font-weight: 600;
+    }
+    .btn.danger:hover { opacity: 0.9; }
     .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
     .status-dot {
@@ -120,6 +127,36 @@
     }
 
     .spacer { flex: 1; }
+
+    .report-status {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .report-status.ok { color: var(--success); }
+    .report-status.err { color: var(--danger); }
+    .report-status.pending { color: var(--warning); }
+
+    /* ── Start overlay ─────────────────────────── */
+    .start-overlay {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 80px 24px;
+      text-align: center;
+    }
+
+    .start-overlay p {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 24px;
+      max-width: 500px;
+      line-height: 1.6;
+    }
+
+    .start-overlay .btn { font-size: 16px; padding: 12px 32px; }
 
     /* ── Section headers ───────────────────────── */
     .section { margin-bottom: 28px; }
@@ -191,16 +228,8 @@
     .tx-stat-val.warn { color: var(--warning); }
     .tx-stat-val.bad { color: var(--danger); }
 
-    .tx-chart-wrap {
-      padding: 0 14px 10px;
-    }
-
-    .tx-chart {
-      width: 100%;
-      height: 80px;
-      display: block;
-      border-radius: var(--radius-xs);
-    }
+    .tx-chart-wrap { padding: 0 14px 10px; }
+    .tx-chart { width: 100%; height: 80px; display: block; border-radius: var(--radius-xs); }
 
     /* ── Completed transmission table ──────────── */
     .tx-table {
@@ -230,24 +259,8 @@
 
     .tx-table tr:hover td { color: var(--text); }
 
-    .sparkline-cell {
-      padding: 2px 10px;
-    }
-
-    .sparkline {
-      width: 200px;
-      height: 24px;
-      display: block;
-    }
-
-    .report-status {
-      font-family: var(--font-mono);
-      font-size: 12px;
-      color: var(--text-muted);
-      margin-left: 8px;
-    }
-    .report-status.ok { color: var(--success); }
-    .report-status.err { color: var(--danger); }
+    .sparkline-cell { padding: 2px 10px; }
+    .sparkline { width: 200px; height: 24px; display: block; }
 
     .empty-state {
       text-align: center;
@@ -268,76 +281,98 @@
 <body>
   <div class="diag-wrap">
 
-    <!-- Summary cards -->
-    <div class="summary-row">
-      <div class="stat-card">
-        <div class="stat-card-label">Connection</div>
-        <div class="stat-card-value" id="card-conn">--</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-card-label">Uptime</div>
-        <div class="stat-card-value" id="card-uptime">--</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-card-label">Total Frames</div>
-        <div class="stat-card-value" id="card-frames">0</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-card-label">Seq Gaps</div>
-        <div class="stat-card-value" id="card-gaps">0</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-card-label">Transmissions</div>
-        <div class="stat-card-value" id="card-txcount">0</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-card-label">Avg Client Jitter</div>
-        <div class="stat-card-value" id="card-jitter">--</div>
-      </div>
+    <!-- Start overlay (shown before engine is started) -->
+    <div id="start-overlay" class="start-overlay">
+      <p><strong>How it works:</strong></p>
+      <p>1. Click Start &mdash; plays all incoming audio and collects diagnostics<br>
+         2. Listen for audio problems (gaps, choppy, distortion)<br>
+         3. Click Report Problem &mdash; waits for the current transmission to finish, then submits a full diagnostic report including jitter timing, buffer health, and frame data</p>
+      <button class="btn primary" id="btn-start">Start Listening</button>
     </div>
 
-    <!-- Controls -->
-    <div class="controls">
-      <span class="status-dot" id="ws-dot"></span>
-      <span class="status-text" id="ws-status">Disconnected</span>
-      <span class="spacer"></span>
-      <button class="btn" id="btn-clear">Clear Log</button>
-      <button class="btn primary" id="btn-report">Send Debug Report</button>
-      <span class="report-status" id="report-status"></span>
-    </div>
+    <!-- Main UI (hidden until started) -->
+    <div id="main-ui" style="display:none">
 
-    <!-- Active transmissions -->
-    <div class="section" id="active-section">
-      <div class="section-title">
-        Active Transmissions
-        <span class="section-count" id="active-count">0</span>
+      <!-- Summary cards -->
+      <div class="summary-row">
+        <div class="stat-card">
+          <div class="stat-card-label">Connection</div>
+          <div class="stat-card-value" id="card-conn">--</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-label">Uptime</div>
+          <div class="stat-card-value" id="card-uptime">--</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-label">Total Frames</div>
+          <div class="stat-card-value" id="card-frames">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-label">Seq Gaps</div>
+          <div class="stat-card-value" id="card-gaps">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-label">Transmissions</div>
+          <div class="stat-card-value" id="card-txcount">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-label">Underruns</div>
+          <div class="stat-card-value" id="card-underruns">0</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-label">Avg Buffer</div>
+          <div class="stat-card-value" id="card-buffer">--</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-card-label">Avg Client Jitter</div>
+          <div class="stat-card-value" id="card-jitter">--</div>
+        </div>
       </div>
-      <div id="active-list"></div>
-      <div class="empty-state" id="active-empty">Waiting for audio...</div>
-    </div>
 
-    <!-- Completed transmissions -->
-    <div class="section" id="completed-section">
-      <div class="section-title">
-        Completed Transmissions
-        <span class="section-count" id="completed-count">0</span>
+      <!-- Controls -->
+      <div class="controls">
+        <span class="status-dot" id="ws-dot"></span>
+        <span class="status-text" id="ws-status">Disconnected</span>
+        <span class="spacer"></span>
+        <button class="btn" id="btn-clear">Clear Log</button>
+        <button class="btn" id="btn-stop">Stop</button>
+        <button class="btn danger" id="btn-report">Report Problem</button>
+        <span class="report-status" id="report-status"></span>
       </div>
-      <div style="overflow-x: auto;">
-        <table class="tx-table" id="completed-table">
-          <thead>
-            <tr>
-              <th>TG</th>
-              <th>Duration</th>
-              <th>Frames</th>
-              <th>Gaps</th>
-              <th>Client (min/avg/max)</th>
-              <th>Server (min/avg/max)</th>
-              <th>Network (min/avg/max)</th>
-              <th>Jitter Plot</th>
-            </tr>
-          </thead>
-          <tbody id="completed-body"></tbody>
-        </table>
+
+      <!-- Active transmissions -->
+      <div class="section" id="active-section">
+        <div class="section-title">
+          Active Transmissions
+          <span class="section-count" id="active-count">0</span>
+        </div>
+        <div id="active-list"></div>
+        <div class="empty-state" id="active-empty">Waiting for audio...</div>
+      </div>
+
+      <!-- Completed transmissions -->
+      <div class="section" id="completed-section">
+        <div class="section-title">
+          Completed Transmissions
+          <span class="section-count" id="completed-count">0</span>
+        </div>
+        <div style="overflow-x: auto;">
+          <table class="tx-table" id="completed-table">
+            <thead>
+              <tr>
+                <th>TG</th>
+                <th>Duration</th>
+                <th>Frames</th>
+                <th>Gaps</th>
+                <th>Client (min/avg/max)</th>
+                <th>Server (min/avg/max)</th>
+                <th>Network (min/avg/max)</th>
+                <th>Jitter Plot</th>
+              </tr>
+            </thead>
+            <tbody id="completed-body"></tbody>
+          </table>
+        </div>
       </div>
     </div>
   </div>
@@ -347,6 +382,8 @@
   (function() {
     'use strict';
 
+    // Debug report URL — uses case.luxprimatech.com for external instances,
+    // relative path for local/same-origin deployments with debug-receiver
     var DEBUG_REPORT_URL = 'https://case.luxprimatech.com/debug/report';
 
     var engine = null;
@@ -356,13 +393,25 @@
     var totalTxCompleted = 0;
     var activeCards = {};   // key -> { card, canvas, ctx, deltas, tx }
     var completedRows = []; // completed transmissions
+    var totalUnderruns = 0;
+
+    // Report state
+    var reportPending = false;
+    var reportClickTime = 0;
+    var reportTrackedKeys = null; // Set of active tx keys at report click time
 
     // ── DOM refs ──────────────────────────────────
+    var startOverlay = document.getElementById('start-overlay');
+    var mainUI = document.getElementById('main-ui');
+    var btnStart = document.getElementById('btn-start');
+    var btnStop = document.getElementById('btn-stop');
     var cardConn = document.getElementById('card-conn');
     var cardUptime = document.getElementById('card-uptime');
     var cardFrames = document.getElementById('card-frames');
     var cardGaps = document.getElementById('card-gaps');
     var cardTxcount = document.getElementById('card-txcount');
+    var cardUnderruns = document.getElementById('card-underruns');
+    var cardBuffer = document.getElementById('card-buffer');
     var cardJitter = document.getElementById('card-jitter');
     var wsDot = document.getElementById('ws-dot');
     var wsStatus = document.getElementById('ws-status');
@@ -405,7 +454,6 @@
       var ctx = canvas.getContext('2d');
       var dpr = window.devicePixelRatio || 1;
 
-      // Handle hi-DPI
       if (canvas._dprSet !== dpr) {
         var rect = canvas.getBoundingClientRect();
         canvas.width = rect.width * dpr;
@@ -417,10 +465,9 @@
       }
       var w = canvas._cssW || canvas.width / dpr;
       var h = canvas._cssH || canvas.height / dpr;
-      var pad = 12; // top/bottom padding
+      var pad = 12;
 
       ctx.clearRect(0, 0, w, h);
-
       if (!deltas || deltas.length < 2) return;
 
       var styles = getComputedStyle(document.documentElement);
@@ -429,9 +476,7 @@
       var warningColor = styles.getPropertyValue('--warning').trim() || '#ff0';
       var dangerColor = styles.getPropertyValue('--danger').trim() || '#f00';
 
-      // Compute mean and auto-scale Y-axis around it
-      var sum = 0;
-      var dMin = Infinity, dMax = -Infinity;
+      var sum = 0, dMin = Infinity, dMax = -Infinity;
       for (var i = 0; i < deltas.length; i++) {
         var d = deltas[i].clientDelta;
         sum += d;
@@ -439,50 +484,36 @@
         if (d > dMax) dMax = d;
       }
       var mean = sum / deltas.length;
-
-      // Y range: center on mean, show enough to see variation
-      // At minimum show ±30ms around mean, expand if data exceeds that
       var spread = Math.max(dMax - dMin, 60);
       var yMid = mean;
       var yLo = Math.max(0, yMid - spread * 0.6);
       var yHi = yMid + spread * 0.6;
-      // Ensure all points fit
       if (dMin < yLo) yLo = dMin - 5;
       if (dMax > yHi) yHi = dMax + 5;
       var yRange = yHi - yLo;
 
-      // Reference line at mean
       var meanY = pad + (1 - (mean - yLo) / yRange) * (h - pad * 2);
       ctx.strokeStyle = mutedColor;
       ctx.lineWidth = 0.5;
       ctx.setLineDash([4, 4]);
-      ctx.beginPath();
-      ctx.moveTo(0, meanY);
-      ctx.lineTo(w, meanY);
-      ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, meanY); ctx.lineTo(w, meanY); ctx.stroke();
       ctx.setLineDash([]);
 
-      // Plot points — color by deviation from mean
       var xStep = w / Math.max(deltas.length - 1, 1);
       for (var i = 0; i < deltas.length; i++) {
         var d = deltas[i].clientDelta;
         var x = i * xStep;
         var y = pad + (1 - (d - yLo) / yRange) * (h - pad * 2);
-
         var dev = Math.abs(d - mean);
         var color = successColor;
         if (dev > mean * 0.5) color = dangerColor;
         else if (dev > mean * 0.15) color = warningColor;
-
         ctx.fillStyle = color;
         ctx.globalAlpha = 0.8;
-        ctx.beginPath();
-        ctx.arc(x, y, 1.5, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.beginPath(); ctx.arc(x, y, 1.5, 0, Math.PI * 2); ctx.fill();
       }
       ctx.globalAlpha = 1;
 
-      // Labels
       ctx.fillStyle = mutedColor;
       ctx.font = '9px monospace';
       ctx.fillText(Math.round(mean) + 'ms', 2, meanY - 3);
@@ -506,8 +537,7 @@
       canvas.width = rect.width * dpr;
       canvas.height = rect.height * dpr;
       ctx.scale(dpr, dpr);
-      var w = rect.width;
-      var h = rect.height;
+      var w = rect.width, h = rect.height;
 
       if (!deltas || deltas.length < 2) return;
 
@@ -516,7 +546,6 @@
       var warningColor = styles.getPropertyValue('--warning').trim() || '#ff0';
       var dangerColor = styles.getPropertyValue('--danger').trim() || '#f00';
 
-      // Auto-scale around mean
       var sum = 0, dMin = Infinity, dMax = -Infinity;
       for (var i = 0; i < deltas.length; i++) {
         var d = deltas[i].clientDelta;
@@ -531,24 +560,19 @@
       if (dMin < yLo) yLo = dMin - 5;
       if (dMax > yHi) yHi = dMax + 5;
       var yRange = yHi - yLo;
-
       var xStep = w / Math.max(deltas.length - 1, 1);
 
       for (var i = 0; i < deltas.length; i++) {
         var d = deltas[i].clientDelta;
         var x = i * xStep;
         var y = (1 - (d - yLo) / yRange) * h;
-
         var dev = Math.abs(d - mean);
         var color = successColor;
         if (dev > mean * 0.5) color = dangerColor;
         else if (dev > mean * 0.15) color = warningColor;
-
         ctx.fillStyle = color;
         ctx.globalAlpha = 0.7;
-        ctx.beginPath();
-        ctx.arc(x, y, 1, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.beginPath(); ctx.arc(x, y, 1, 0, Math.PI * 2); ctx.fill();
       }
       ctx.globalAlpha = 1;
     }
@@ -616,20 +640,14 @@
 
       card.appendChild(header);
       card.appendChild(chartWrap);
-
       activeList.insertBefore(card, activeList.firstChild);
       activeEmpty.style.display = 'none';
 
       return {
-        card: card,
-        canvas: canvas,
+        card: card, canvas: canvas,
         ctx: canvas.getContext('2d'),
-        metaEl: metaEl,
-        cVal: cVal,
-        sVal: sVal,
-        nVal: nVal,
-        deltas: [],
-        tx: tx
+        metaEl: metaEl, cVal: cVal, sVal: sVal, nVal: nVal,
+        deltas: [], tx: tx
       };
     }
 
@@ -639,16 +657,11 @@
 
       var stats = engine.getJitterStats()[tx.key];
       if (stats) {
-        var cs = stats.client;
-        var ss = stats.server;
-        var ns = stats.network;
-
+        var cs = stats.client, ss = stats.server, ns = stats.network;
         info.cVal.textContent = fmtMs(cs.min) + '/' + fmtMs(cs.mean) + '/' + fmtMs(cs.max);
         info.cVal.className = 'tx-stat-val ' + jitterClass(cs.mean);
-
         info.sVal.textContent = fmtMs(ss.min) + '/' + fmtMs(ss.mean) + '/' + fmtMs(ss.max);
         info.sVal.className = 'tx-stat-val ' + jitterClass(ss.mean);
-
         info.nVal.textContent = fmtMs(ns.min) + '/' + fmtMs(ns.mean) + '/' + fmtMs(ns.max);
         info.nVal.className = 'tx-stat-val';
       }
@@ -656,7 +669,6 @@
       var elapsed = fmtDuration(performance.now() - tx.startTime);
       info.metaEl.textContent = 'sys:' + tx.systemId + ' | ' + tx.frameCount + ' frames | ' + elapsed;
 
-      // Redraw chart (throttle to ~10fps)
       if (!info._lastDraw || performance.now() - info._lastDraw > 100) {
         drawJitterChart(info.canvas, info.deltas, true);
         info._lastDraw = performance.now();
@@ -666,41 +678,24 @@
     // ── Move transmission to completed table ──────
     function addCompletedRow(tx) {
       totalTxCompleted++;
-
-      var cs = tx.clientStats || {};
-      var ss = tx.serverStats || {};
-      var ns = tx.networkStats || {};
+      var cs = tx.clientStats || {}, ss = tx.serverStats || {}, ns = tx.networkStats || {};
 
       var row = document.createElement('tr');
-
-      var tdTg = document.createElement('td');
-      tdTg.textContent = tx.tgid + ' (sys:' + tx.systemId + ')';
-      row.appendChild(tdTg);
-
-      var tdDur = document.createElement('td');
-      tdDur.textContent = fmtDuration(tx.duration);
-      row.appendChild(tdDur);
-
-      var tdFrames = document.createElement('td');
-      tdFrames.textContent = tx.frameCount;
-      row.appendChild(tdFrames);
-
-      var tdGaps = document.createElement('td');
-      tdGaps.textContent = tx.seqGaps;
-      if (tx.seqGaps > 0) tdGaps.style.color = 'var(--danger)';
-      row.appendChild(tdGaps);
-
-      var tdClient = document.createElement('td');
-      tdClient.textContent = fmtMs(cs.min) + ' / ' + fmtMs(cs.mean) + ' / ' + fmtMs(cs.max);
-      row.appendChild(tdClient);
-
-      var tdServer = document.createElement('td');
-      tdServer.textContent = fmtMs(ss.min) + ' / ' + fmtMs(ss.mean) + ' / ' + fmtMs(ss.max);
-      row.appendChild(tdServer);
-
-      var tdNet = document.createElement('td');
-      tdNet.textContent = fmtMs(ns.min) + ' / ' + fmtMs(ns.mean) + ' / ' + fmtMs(ns.max);
-      row.appendChild(tdNet);
+      var cells = [
+        tx.tgid + ' (sys:' + tx.systemId + ')',
+        fmtDuration(tx.duration),
+        String(tx.frameCount),
+        String(tx.seqGaps),
+        fmtMs(cs.min) + ' / ' + fmtMs(cs.mean) + ' / ' + fmtMs(cs.max),
+        fmtMs(ss.min) + ' / ' + fmtMs(ss.mean) + ' / ' + fmtMs(ss.max),
+        fmtMs(ns.min) + ' / ' + fmtMs(ns.mean) + ' / ' + fmtMs(ns.max),
+      ];
+      for (var i = 0; i < cells.length; i++) {
+        var td = document.createElement('td');
+        td.textContent = cells[i];
+        if (i === 3 && tx.seqGaps > 0) td.style.color = 'var(--danger)';
+        row.appendChild(td);
+      }
 
       var tdSpark = document.createElement('td');
       tdSpark.className = 'sparkline-cell';
@@ -709,21 +704,15 @@
       tdSpark.appendChild(sparkCanvas);
       row.appendChild(tdSpark);
 
-      // Insert at top
       if (completedBody.firstChild) {
         completedBody.insertBefore(row, completedBody.firstChild);
       } else {
         completedBody.appendChild(row);
       }
 
-      // Draw sparkline after DOM insertion
-      requestAnimationFrame(function() {
-        drawSparkline(sparkCanvas, tx.deltas);
-      });
+      requestAnimationFrame(function() { drawSparkline(sparkCanvas, tx.deltas); });
 
       completedRows.unshift({ tx: tx, row: row });
-
-      // Keep last 200 rows
       while (completedRows.length > 200) {
         var old = completedRows.pop();
         if (old.row.parentNode) old.row.parentNode.removeChild(old.row);
@@ -735,20 +724,32 @@
       cardUptime.textContent = uptimeStr();
 
       var jitterStats = engine ? engine.getJitterStats() : {};
-      var totalMean = 0;
-      var meanCount = 0;
+      var totalMean = 0, meanCount = 0;
       var keys = Object.keys(jitterStats);
       for (var i = 0; i < keys.length; i++) {
         var s = jitterStats[keys[i]];
-        if (s.client.count > 0) {
-          totalMean += s.client.mean;
-          meanCount++;
-        }
+        if (s.client.count > 0) { totalMean += s.client.mean; meanCount++; }
       }
       if (meanCount > 0) {
         var avg = totalMean / meanCount;
         cardJitter.textContent = fmtMs(avg) + 'ms';
         cardJitter.className = 'stat-card-value ' + jitterClass(avg);
+      }
+
+      // Aggregate buffer stats
+      var bufStats = engine ? engine.getBufferStats() : {};
+      var bufKeys = Object.keys(bufStats);
+      var totalUr = 0, avgBufSum = 0, avgBufCount = 0;
+      for (var i = 0; i < bufKeys.length; i++) {
+        var bs = bufStats[bufKeys[i]];
+        totalUr += bs.underruns || 0;
+        if (bs.avgBufferedMs > 0) { avgBufSum += bs.avgBufferedMs; avgBufCount++; }
+      }
+      totalUnderruns = totalUr;
+      cardUnderruns.textContent = String(totalUr);
+      cardUnderruns.className = 'stat-card-value ' + (totalUr > 10 ? 'bad' : totalUr > 0 ? 'warn' : 'good');
+      if (avgBufCount > 0) {
+        cardBuffer.textContent = Math.round(avgBufSum / avgBufCount) + 'ms';
       }
 
       cardFrames.textContent = totalFrames;
@@ -759,12 +760,64 @@
       completedCount.textContent = totalTxCompleted;
     }
 
-    // ── Send debug report ─────────────────────────
-    function sendReport() {
-      btnReport.disabled = true;
-      reportStatus.textContent = 'Collecting...';
-      reportStatus.className = 'report-status';
+    // ── Gzip compression helper ───────────────────
+    function gzipCompress(data) {
+      if (typeof CompressionStream === 'undefined') {
+        // Fallback: send uncompressed
+        return Promise.resolve({ data: data, compressed: false });
+      }
+      var blob = new Blob([data]);
+      var cs = new CompressionStream('gzip');
+      var stream = blob.stream().pipeThrough(cs);
+      return new Response(stream).arrayBuffer().then(function(buf) {
+        return { data: buf, compressed: true };
+      });
+    }
 
+    // ── Report: wait for active transmissions ─────
+    function startReport() {
+      if (reportPending) return;
+
+      reportPending = true;
+      reportClickTime = performance.now();
+      btnReport.disabled = true;
+
+      // Snapshot currently active transmission keys
+      var activeKeys = Object.keys(activeCards);
+      if (activeKeys.length === 0) {
+        // No active transmissions — submit immediately
+        reportStatus.textContent = 'Building report...';
+        reportStatus.className = 'report-status pending';
+        submitReport();
+        return;
+      }
+
+      reportTrackedKeys = new Set(activeKeys);
+      reportStatus.textContent = 'Waiting for ' + activeKeys.length + ' transmission(s) to end...';
+      reportStatus.className = 'report-status pending';
+    }
+
+    function checkReportReady(endedKey) {
+      if (!reportPending || !reportTrackedKeys) return;
+      reportTrackedKeys.delete(endedKey);
+      if (reportTrackedKeys.size > 0) {
+        reportStatus.textContent = 'Waiting for ' + reportTrackedKeys.size + ' transmission(s) to end...';
+        return;
+      }
+      // All tracked transmissions ended
+      reportStatus.textContent = 'Building report...';
+      submitReport();
+    }
+
+    function submitReport() {
+      // Request fresh buffer stats from all worklets
+      if (engine) engine.requestBufferStats();
+
+      // Small delay to let stats arrive
+      setTimeout(function() { doSubmitReport(); }, 200);
+    }
+
+    function doSubmitReport() {
       var transmissions = engine ? engine.getTransmissionLog() : [];
 
       // Fetch server-side jitter stats
@@ -774,6 +827,7 @@
         .then(function(serverStats) {
           var report = {
             timestamp: new Date().toISOString(),
+            reportClickTime: reportClickTime,
             userAgent: navigator.userAgent,
             connection: navigator.connection ? {
               type: navigator.connection.type,
@@ -790,22 +844,35 @@
             totalFrames: totalFrames,
             totalGaps: totalGaps,
             totalTransmissions: totalTxCompleted,
+            totalUnderruns: totalUnderruns,
             clientJitter: engine ? engine.getJitterStats() : {},
             serverJitter: serverStats,
-            transmissions: transmissions.slice(-50)  // last 50
+            bufferStats: engine ? engine.getBufferStats() : {},
+            transmissions: transmissions.slice(-50)
           };
 
-          reportStatus.textContent = 'Sending...';
+          var json = JSON.stringify(report);
+          reportStatus.textContent = 'Compressing (' + Math.round(json.length / 1024) + ' KB)...';
 
-          return fetch(DEBUG_REPORT_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(report)
+          return gzipCompress(json).then(function(result) {
+            var headers = { 'Content-Type': 'application/json' };
+            var body = result.data;
+            if (result.compressed) {
+              headers['Content-Encoding'] = 'gzip';
+            }
+
+            reportStatus.textContent = 'Sending' + (result.compressed ? ' (' + Math.round(body.byteLength / 1024) + ' KB gzipped)' : '') + '...';
+
+            return fetch(DEBUG_REPORT_URL, {
+              method: 'POST',
+              headers: headers,
+              body: body
+            });
           });
         })
         .then(function(r) {
           if (r.ok) {
-            reportStatus.textContent = 'Sent!';
+            reportStatus.textContent = 'Report sent!';
             reportStatus.className = 'report-status ok';
           } else {
             reportStatus.textContent = 'Failed (' + r.status + ')';
@@ -817,16 +884,16 @@
           reportStatus.className = 'report-status err';
         })
         .finally(function() {
+          reportPending = false;
+          reportTrackedKeys = null;
           btnReport.disabled = false;
-          setTimeout(function() { reportStatus.textContent = ''; }, 5000);
+          setTimeout(function() { reportStatus.textContent = ''; reportStatus.className = 'report-status'; }, 8000);
         });
     }
 
     // ── Clear log ─────────────────────────────────
     function clearLog() {
-      while (completedBody.firstChild) {
-        completedBody.removeChild(completedBody.firstChild);
-      }
+      while (completedBody.firstChild) completedBody.removeChild(completedBody.firstChild);
       completedRows = [];
       totalTxCompleted = 0;
       totalFrames = 0;
@@ -834,8 +901,11 @@
       updateSummary();
     }
 
-    // ── Initialize engine ─────────────────────────
-    function init() {
+    // ── Start engine (with audio playback) ────────
+    function startEngine() {
+      startOverlay.style.display = 'none';
+      mainUI.style.display = '';
+
       engine = new AudioEngine('/api/v1/audio/live');
 
       engine.on('status', function(s) {
@@ -853,6 +923,11 @@
         }
       });
 
+      // Auto-unmute new TGs so audio plays
+      engine.on('tg_created', function(ev) {
+        engine.setMute(ev.key, false);
+      });
+
       engine.on('transmission_start', function(tx) {
         var info = createActiveCard(tx);
         activeCards[tx.key] = info;
@@ -863,14 +938,10 @@
         totalFrames++;
         var info = activeCards[ev.key];
         if (!info) return;
-
-        // Get the active transmission from the jitter tracking
         var jStats = engine.getJitterStats();
         var tgStats = jStats[ev.key];
         var tx = tgStats ? tgStats.activeTransmission : info.tx;
-        if (tx) {
-          updateActiveCard(info, ev.sample, tx);
-        }
+        if (tx) updateActiveCard(info, ev.sample, tx);
       });
 
       engine.on('transmission_end', function(tx) {
@@ -880,43 +951,47 @@
         if (info) {
           info.card.classList.remove('active');
           info.card.classList.add('ended');
-          // Final chart draw
           drawJitterChart(info.canvas, info.deltas, false);
-          // Remove from active after a brief moment
           setTimeout(function() {
             if (info.card.parentNode) info.card.parentNode.removeChild(info.card);
             delete activeCards[tx.key];
-            if (Object.keys(activeCards).length === 0) {
-              activeEmpty.style.display = '';
-            }
+            if (Object.keys(activeCards).length === 0) activeEmpty.style.display = '';
             updateSummary();
           }, 2000);
         }
 
         addCompletedRow(tx);
         updateSummary();
+
+        // Check if we're waiting for this transmission to end for a report
+        if (reportPending) checkReportReady(tx.key);
       });
 
-      // Diagnostics doesn't need audio playback — skip AudioContext setup
-      // and just open the WebSocket directly for jitter data.
-      engine._intentionalClose = false;
-      engine._connect();
-      engine.subscribe({ tgids: [], systems: [] });
+      // Start with full audio playback
+      engine.start().then(function() {
+        // Subscribe to all TGs
+        engine.subscribe({ tgids: [], systems: [] });
+      });
 
-      // Periodic summary update
       setInterval(updateSummary, 1000);
-
-      // Button handlers
-      btnReport.addEventListener('click', sendReport);
-      btnClear.addEventListener('click', clearLog);
     }
 
-    // Start
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', init);
-    } else {
-      init();
+    function stopEngine() {
+      if (engine) {
+        engine.stop();
+        engine = null;
+      }
+      connectedAt = null;
+      mainUI.style.display = 'none';
+      startOverlay.style.display = '';
     }
+
+    // ── Button handlers ───────────────────────────
+    btnStart.addEventListener('click', startEngine);
+    btnStop.addEventListener('click', stopEngine);
+    btnReport.addEventListener('click', startReport);
+    btnClear.addEventListener('click', clearLog);
+
   })();
   </script>
 </body>

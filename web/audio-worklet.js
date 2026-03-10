@@ -1,5 +1,6 @@
 // AudioWorklet processor with jitter buffer for live radio audio.
 // Receives PCM int16 samples via port.postMessage, outputs at AudioContext sample rate.
+// Reports buffer health stats back to main thread via 'stats' messages.
 
 class RadioAudioProcessor extends AudioWorkletProcessor {
   constructor() {
@@ -14,11 +15,26 @@ class RadioAudioProcessor extends AudioWorkletProcessor {
     this.playing = false; // playout state: false = buffering, true = playing
     this.silentFrames = 0; // consecutive process() calls with no data
 
+    // Buffer health tracking
+    this.underrunCount = 0;      // total process() calls with empty buffer while playing
+    this.overflowCount = 0;      // total overflow trims
+    this.playoutStartCount = 0;  // how many times playout started
+    this.playoutStopCount = 0;   // how many times playout stopped (sustained underrun)
+    this.minBuffered = Infinity; // min buffer level during playout (samples)
+    this.maxBuffered = 0;        // max buffer level during playout (samples)
+    this.sumBuffered = 0;        // running sum for average
+    this.sampleCount = 0;        // number of process() calls during playout
+    this.statsInterval = 0;      // counter for periodic stats reporting
+    this.lastEnqueueTime = 0;    // timestamp of last enqueue
+    this.enqueueSamplesTotal = 0; // total samples enqueued
+
     this.port.onmessage = (e) => {
       if (e.data.type === 'audio') {
         this.enqueueSamples(e.data.samples, e.data.sampleRate);
       } else if (e.data.type === 'stop') {
         this.active = false;
+      } else if (e.data.type === 'get_stats') {
+        this._sendStats();
       }
     };
   }
@@ -34,6 +50,9 @@ class RadioAudioProcessor extends AudioWorkletProcessor {
       this.buffered = Math.min(this.buffered + 1, this.buffer.length);
     }
 
+    this.enqueueSamplesTotal += int16Array.length;
+    this.lastEnqueueTime = currentTime;
+
     // Overflow protection: only trim when buffer exceeds 1.5s (excessive latency)
     // Normal operation: buffer hovers at 0-400ms during active calls
     const maxSamples = Math.floor(this.inputSampleRate * 1.5);
@@ -42,6 +61,7 @@ class RadioAudioProcessor extends AudioWorkletProcessor {
       const skip = this.buffered - targetSamples;
       this.readPos = (this.readPos + skip) % this.buffer.length;
       this.buffered -= skip;
+      this.overflowCount++;
     }
   }
 
@@ -61,6 +81,7 @@ class RadioAudioProcessor extends AudioWorkletProcessor {
         this.playing = true;
         this.silentFrames = 0;
         this.resampleAccum = 0; // fresh start
+        this.playoutStartCount++;
       } else {
         // Still buffering — output silence
         for (let i = 0; i < output.length; i++) {
@@ -69,6 +90,12 @@ class RadioAudioProcessor extends AudioWorkletProcessor {
         return true;
       }
     }
+
+    // Track buffer level during playout
+    if (this.buffered < this.minBuffered) this.minBuffered = this.buffered;
+    if (this.buffered > this.maxBuffered) this.maxBuffered = this.buffered;
+    this.sumBuffered += this.buffered;
+    this.sampleCount++;
 
     // ratio < 1 when upsampling (e.g. 8000/48000 = 0.167)
     // ratio > 1 when downsampling
@@ -102,17 +129,46 @@ class RadioAudioProcessor extends AudioWorkletProcessor {
     // Radio audio has natural pauses — stopping too early causes repeated
     // stop/start cycles with audible gaps.
     if (!hadData) {
+      this.underrunCount++;
       this.silentFrames++;
       // 500ms at 48kHz with 128-sample blocks = ~188 frames
       if (this.silentFrames > 188) {
         this.playing = false;
         this.silentFrames = 0;
+        this.playoutStopCount++;
       }
     } else {
       this.silentFrames = 0;
     }
 
+    // Report stats every ~1s (48000/128 ≈ 375 process() calls per second)
+    this.statsInterval++;
+    if (this.statsInterval >= 375) {
+      this.statsInterval = 0;
+      this._sendStats();
+    }
+
     return true;
+  }
+
+  _sendStats() {
+    const avgBuffered = this.sampleCount > 0 ? this.sumBuffered / this.sampleCount : 0;
+    const sr = this.inputSampleRate || 8000;
+    this.port.postMessage({
+      type: 'stats',
+      playing: this.playing,
+      buffered: this.buffered,
+      bufferedMs: Math.round(this.buffered / sr * 1000),
+      avgBufferedMs: Math.round(avgBuffered / sr * 1000),
+      minBufferedMs: this.minBuffered === Infinity ? 0 : Math.round(this.minBuffered / sr * 1000),
+      maxBufferedMs: Math.round(this.maxBuffered / sr * 1000),
+      underruns: this.underrunCount,
+      overflows: this.overflowCount,
+      playoutStarts: this.playoutStartCount,
+      playoutStops: this.playoutStopCount,
+      enqueuedSamples: this.enqueueSamplesTotal,
+      inputSampleRate: sr,
+    });
   }
 }
 

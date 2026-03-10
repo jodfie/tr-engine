@@ -252,6 +252,25 @@ class AudioEngine {
     return this._transmissionLog.slice();
   }
 
+  getBufferStats() {
+    var result = {};
+    this.tgNodes.forEach(function(nodes, key) {
+      if (nodes.bufferStats) {
+        result[key] = nodes.bufferStats;
+      }
+    });
+    return result;
+  }
+
+  // Request fresh stats from all worklets (async — arrives via buffer_stats event)
+  requestBufferStats() {
+    this.tgNodes.forEach(function(nodes) {
+      if (nodes.worklet && nodes.worklet.port) {
+        nodes.worklet.port.postMessage({ type: 'get_stats' });
+      }
+    });
+  }
+
   // --- Jitter tracking helpers ---
 
   _newJitterEntry() {
@@ -621,7 +640,7 @@ class AudioEngine {
     panner.connect(gain);
     gain.connect(this.masterCompressor);
 
-    this.tgNodes.set(key, {
+    var nodeEntry = {
       worklet: worklet,
       compressor: compressor,
       panner: panner,
@@ -631,7 +650,19 @@ class AudioEngine {
       lastActivity: Date.now(),
       tgid: tgid,
       systemId: systemId || 0,
-    });
+      bufferStats: null, // latest stats from worklet
+    };
+
+    // Listen for stats from the worklet
+    var self = this;
+    worklet.port.onmessage = function(e) {
+      if (e.data.type === 'stats') {
+        nodeEntry.bufferStats = e.data;
+        self.emit('buffer_stats', { key: key, stats: e.data });
+      }
+    };
+
+    this.tgNodes.set(key, nodeEntry);
 
     // Pan: deterministic position from tgid (assigned on unmute via setMute).
     // For manual pan, restore saved position now.
