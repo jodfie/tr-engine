@@ -102,7 +102,7 @@ func (h *AudioStreamHandler) HandleStream(w http.ResponseWriter, r *http.Request
 	keepalive := time.NewTicker(15 * time.Second)
 	defer keepalive.Stop()
 
-	tgSeq := make(map[uint32]uint16) // per-TG sequence counter
+	tgSeq := make(map[uint64]uint16) // per-system:TG sequence counter
 	// Pre-allocate frame buffer: 14-byte header + max audio data
 	frameBuf := make([]byte, 14+8192)
 
@@ -146,7 +146,7 @@ func (h *AudioStreamHandler) HandleStream(w http.ResponseWriter, r *http.Request
 			// audio data              bytes 14+
 
 			tsMs := uint32(time.Since(connStart).Milliseconds())
-			tgKey := uint32(frame.TGID)
+			tgKey := uint64(frame.SystemID)<<32 | uint64(uint32(frame.TGID))
 			tgSeq[tgKey]++
 			seq := tgSeq[tgKey]
 
