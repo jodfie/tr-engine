@@ -33,6 +33,10 @@ func (m *mockAudioStreamer) AudioStreamStatus() *AudioStreamStatusData {
 	return &AudioStreamStatusData{Enabled: m.enabled, ConnectedClients: m.bus.SubscriberCount()}
 }
 
+func (m *mockAudioStreamer) AudioJitterStats() map[string]audio.StreamJitterSnapshot {
+	return nil
+}
+
 // newTestAudioStreamServer creates a test HTTP server with the audio stream handler.
 func newTestAudioStreamServer(streamer AudioStreamer, maxClients int) *httptest.Server {
 	r := chi.NewRouter()
