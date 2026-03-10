@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="auth.js?v=1"></script>
+<!-- No card-title meta tag — this page is hidden from the nav dropdown -->
+<title>Debug Report — tr-engine</title>
+
+<script src="theme-config.js"></script>
+
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: var(--font-body);
+  font-weight: var(--font-weight-body);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+  transition: background 0.5s, color 0.4s;
+  -webkit-font-smoothing: antialiased;
+}
+
+.container {
+  max-width: 640px;
+  margin: 80px auto 40px;
+  padding: 0 20px;
+}
+
+h1 {
+  font-family: var(--font-display, var(--font-body));
+  font-weight: var(--font-weight-display, 700);
+  font-size: 24px;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+
+.subtitle {
+  color: var(--text-muted);
+  font-size: 14px;
+  margin-bottom: 32px;
+  line-height: 1.5;
+}
+
+label {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  margin-bottom: 6px;
+}
+
+input[type="text"],
+textarea {
+  width: 100%;
+  padding: 10px 12px;
+  font-family: var(--font-body);
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg-secondary, var(--bg-surface, #1a1a2e));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  outline: none;
+  transition: border-color 0.3s;
+}
+
+input[type="text"]:focus,
+textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-dim, rgba(100, 100, 255, 0.15));
+}
+
+textarea {
+  min-height: 120px;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.form-group {
+  margin-bottom: 20px;
+}
+
+.info-box {
+  background: var(--bg-secondary, var(--bg-surface, #1a1a2e));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm, 6px);
+  padding: 16px 20px;
+  margin-bottom: 20px;
+}
+
+.info-box h3 {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+.info-box ul {
+  list-style: none;
+  padding: 0;
+}
+
+.info-box li {
+  font-size: 13px;
+  color: var(--text-mid, var(--text-muted));
+  padding: 3px 0;
+  padding-left: 18px;
+  position: relative;
+  line-height: 1.4;
+}
+
+.info-box li::before {
+  content: "\2022";
+  position: absolute;
+  left: 4px;
+  color: var(--accent);
+}
+
+.consent {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin-bottom: 20px;
+}
+
+.send-btn {
+  display: inline-block;
+  padding: 10px 28px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--bg, #0a0a1a);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm, 6px);
+  cursor: pointer;
+  transition: opacity 0.2s, box-shadow 0.2s;
+}
+
+.send-btn:hover:not(:disabled) {
+  opacity: 0.9;
+  box-shadow: 0 0 16px var(--accent-glow, rgba(100, 100, 255, 0.3));
+}
+
+.send-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.status {
+  margin-top: 16px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm, 6px);
+  font-size: 13px;
+  font-family: var(--font-mono);
+  display: none;
+}
+
+.status.success {
+  display: block;
+  background: rgba(0, 200, 100, 0.1);
+  border: 1px solid rgba(0, 200, 100, 0.3);
+  color: #00c864;
+}
+
+.status.error {
+  display: block;
+  background: rgba(255, 60, 60, 0.1);
+  border: 1px solid rgba(255, 60, 60, 0.3);
+  color: #ff3c3c;
+}
+</style>
+</head>
+<body>
+
+<div class="container">
+  <h1>Send Debug Report</h1>
+  <p class="subtitle">Help troubleshoot issues by sending system diagnostics to the developer.</p>
+
+  <div class="form-group">
+    <label for="problem">What's wrong?</label>
+    <input type="text" id="problem" placeholder="Brief description of the issue">
+  </div>
+
+  <div class="form-group">
+    <label for="context">Additional context</label>
+    <textarea id="context" placeholder="Paste your docker-compose.yml, config snippets, error messages, etc."></textarea>
+  </div>
+
+  <div class="info-box">
+    <h3>Auto-collected diagnostics</h3>
+    <ul>
+      <li>Browser info (user agent, screen, network type)</li>
+      <li>Audio playback state (if active)</li>
+      <li>Recent browser console errors</li>
+      <li>Server configuration (passwords and API keys are redacted)</li>
+      <li>trunk-recorder config (if available)</li>
+      <li>System health (database, MQTT, streaming status)</li>
+      <li>Audio streaming jitter statistics</li>
+      <li>Recent trunk-recorder warnings and errors (last hour)</li>
+      <li>Server environment (hostname, network interfaces, container detection)</li>
+    </ul>
+  </div>
+
+  <p class="consent">This sends system diagnostics to the tr-engine developer. Secrets (passwords, API keys, tokens) are automatically redacted before transmission.</p>
+
+  <button class="send-btn" id="sendBtn" onclick="sendReport()">Send Debug Report</button>
+
+  <div class="status" id="status"></div>
+</div>
+
+<script>
+// ── Console error capture (ring buffer, last 50) ──
+const consoleErrors = [];
+const MAX_ERRORS = 50;
+const origConsoleError = console.error;
+console.error = function() {
+  const args = Array.from(arguments).map(a => {
+    try { return typeof a === 'object' ? JSON.stringify(a) : String(a); }
+    catch { return String(a); }
+  });
+  consoleErrors.push({ timestamp: new Date().toISOString(), message: args.join(' ') });
+  if (consoleErrors.length > MAX_ERRORS) consoleErrors.shift();
+  origConsoleError.apply(console, arguments);
+};
+
+function collectClientData() {
+  const data = {
+    timestamp: new Date().toISOString(),
+    userAgent: navigator.userAgent,
+    platform: navigator.platform,
+    language: navigator.language,
+    screen: {
+      width: screen.width,
+      height: screen.height,
+      pixelRatio: window.devicePixelRatio || 1
+    },
+    page: {
+      url: location.href,
+      referrer: document.referrer
+    },
+    consoleErrors: consoleErrors.slice()
+  };
+
+  // Network info
+  const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+  if (conn) {
+    data.network = {
+      type: conn.type || null,
+      effectiveType: conn.effectiveType || null,
+      downlink: conn.downlink || null,
+      rtt: conn.rtt || null
+    };
+  } else {
+    data.network = null;
+  }
+
+  // Audio support probe
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    data.audioSupport = {
+      state: ctx.state,
+      sampleRate: ctx.sampleRate,
+      baseLatency: ctx.baseLatency || null
+    };
+    ctx.close();
+  } catch (e) {
+    data.audioSupport = { error: e.message };
+  }
+
+  // Audio engine state (if live audio is active)
+  if (window.audioEngine) {
+    try {
+      data.audioEngine = {
+        connected: window.audioEngine.connected || false,
+        activeTGs: window.audioEngine.activeTGs || null
+      };
+    } catch (e) {
+      data.audioEngine = { error: e.message };
+    }
+  } else {
+    data.audioEngine = null;
+  }
+
+  // Theme
+  if (window.ThemeEngine && typeof window.ThemeEngine.current === 'function') {
+    try { data.theme = window.ThemeEngine.current(); }
+    catch { data.theme = null; }
+  } else {
+    data.theme = null;
+  }
+
+  return data;
+}
+
+async function sendReport() {
+  const btn = document.getElementById('sendBtn');
+  const statusEl = document.getElementById('status');
+  const problem = document.getElementById('problem').value.trim();
+  const additionalContext = document.getElementById('context').value.trim();
+
+  // Reset status
+  statusEl.className = 'status';
+  statusEl.style.display = 'none';
+  statusEl.textContent = '';
+
+  // Disable button
+  btn.disabled = true;
+  btn.textContent = 'Sending...';
+
+  try {
+    const clientData = collectClientData();
+    clientData.problem = problem;
+    clientData.additionalContext = additionalContext;
+
+    const resp = await fetch('/api/v1/debug-report', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(clientData)
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(text || `HTTP ${resp.status}`);
+    }
+
+    statusEl.className = 'status success';
+    statusEl.textContent = 'Report sent successfully. Thank you!';
+  } catch (e) {
+    statusEl.className = 'status error';
+    statusEl.textContent = 'Failed to send: ' + e.message;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Send Debug Report';
+  }
+}
+</script>
+
+<script src="theme-engine.js?v=2"></script>
+</body>
+</html>
