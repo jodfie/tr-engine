@@ -16,6 +16,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/hlog"
+	"github.com/snarg/tr-engine/internal/database"
 	"golang.org/x/time/rate"
 )
 
@@ -344,12 +345,20 @@ func BearerAuth(tokens ...string) func(http.Handler) http.Handler {
 	}
 }
 
-// JWTOrTokenAuth authenticates requests via JWT or legacy bearer tokens.
-// If the token contains two dots, it's treated as a JWT and parsed for claims.
-// Otherwise, it's compared against the legacy tokens (writeToken, authToken).
+// JWTOrTokenAuth authenticates requests via JWT, API keys, or legacy bearer tokens.
+// Resolution order:
+//  1. JWT (token contains two dots) → parse claims for user_id, role
+//  2. API key (starts with "tre_") → hash lookup in DB for role
+//  3. Legacy WRITE_TOKEN → role=editor
+//  4. Legacy AUTH_TOKEN → role=viewer
+//
 // If no JWT secret and no tokens are configured, all requests pass through.
-func JWTOrTokenAuth(jwtSecret []byte, writeToken, authToken string) func(http.Handler) http.Handler {
+func JWTOrTokenAuth(jwtSecret []byte, writeToken, authToken string, db ...apiKeyResolver) func(http.Handler) http.Handler {
 	hasTokens := writeToken != "" || authToken != ""
+	var keyDB apiKeyResolver
+	if len(db) > 0 {
+		keyDB = db[0]
+	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -375,7 +384,23 @@ func JWTOrTokenAuth(jwtSecret []byte, writeToken, authToken string) func(http.Ha
 					next.ServeHTTP(w, r)
 					return
 				}
-				// JWT parse failed — fall through to legacy token check
+				// JWT parse failed — fall through to API key / legacy token check
+			}
+
+			// API key path: starts with "tre_" prefix
+			if keyDB != nil && strings.HasPrefix(provided, "tre_") {
+				key, err := keyDB.ResolveAPIKey(r.Context(), provided)
+				if err == nil && key != nil {
+					userID := 0
+					if key.UserID != nil {
+						userID = *key.UserID
+					}
+					r = setAuthContext(r, userID, key.Label, key.Role, "api_key")
+					// Best-effort touch last_used_at (don't block request)
+					go keyDB.TouchAPIKey(context.Background(), key.ID)
+					next.ServeHTTP(w, r)
+					return
+				}
 			}
 
 			// Legacy token path: check write token first (editor), then auth token (viewer)
@@ -393,6 +418,25 @@ func JWTOrTokenAuth(jwtSecret []byte, writeToken, authToken string) func(http.Ha
 			WriteError(w, http.StatusUnauthorized, "unauthorized")
 		})
 	}
+}
+
+// apiKeyResolver is the interface needed for API key lookup in middleware.
+// Satisfied by *database.DB.
+type apiKeyResolver interface {
+	ResolveAPIKey(ctx context.Context, plaintext string) (*database.APIKey, error)
+	TouchAPIKey(ctx context.Context, id int) error
+}
+
+// EditorOrAbove requires the caller to have editor or admin role.
+func EditorOrAbove(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		role := ContextRole(r)
+		if RoleLevel(role) < RoleLevel("editor") {
+			WriteErrorWithCode(w, http.StatusForbidden, ErrForbidden, "editor or admin access required")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // WriteAuth requires the write token for mutating HTTP methods (POST, PATCH, PUT, DELETE).

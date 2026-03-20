@@ -115,12 +115,18 @@ func NewServer(opts ServerOptions) *Server {
 		})
 	}
 
-	// User auth endpoints (login/refresh/logout) — unauthenticated
+	// User auth endpoints (login/refresh/logout/setup) — unauthenticated
 	if opts.Config.JWTSecret != "" {
 		authHandler := NewAuthHandler(opts.DB, []byte(opts.Config.JWTSecret), opts.Log)
 		r.Post("/api/v1/auth/login", authHandler.Login)
 		r.Post("/api/v1/auth/refresh", authHandler.Refresh)
 		r.Post("/api/v1/auth/logout", authHandler.Logout)
+	}
+
+	// First-run setup — unauthenticated, only works when 0 users exist
+	{
+		setupHandler := NewSetupHandler(opts.DB, opts.Log)
+		r.Post("/api/v1/auth/setup", setupHandler.Setup)
 	}
 
 	// Upload endpoint with custom auth (accepts form field key/api_key)
@@ -157,8 +163,8 @@ func NewServer(opts ServerOptions) *Server {
 			r.Use(metrics.InstrumentHandler)
 		}
 		if opts.Config.AuthEnabled {
-			// Use JWTOrTokenAuth which handles both JWT and legacy token auth.
-			r.Use(JWTOrTokenAuth([]byte(opts.Config.JWTSecret), opts.Config.WriteToken, opts.Config.AuthToken))
+			// Use JWTOrTokenAuth which handles JWT, API keys, and legacy token auth.
+			r.Use(JWTOrTokenAuth([]byte(opts.Config.JWTSecret), opts.Config.WriteToken, opts.Config.AuthToken, opts.DB))
 
 			r.Use(WriteAuth(opts.Config.WriteToken, opts.Config.AuthToken))
 		}
@@ -190,6 +196,27 @@ func NewServer(opts ServerOptions) *Server {
 			r.Post("/pages", SavePageHandler(webDir))
 
 			NewQueryHandler(opts.DB).Routes(r)
+
+			// API key management
+			{
+				keysHandler := NewKeysHandler(opts.DB, opts.Log)
+				r.Route("/auth/keys", func(r chi.Router) {
+					// Editor+ routes (own key management)
+					r.Group(func(r chi.Router) {
+						r.Use(EditorOrAbove)
+						r.Get("/", keysHandler.ListOwn)
+						r.Post("/", keysHandler.Create)
+						r.Delete("/{id}", keysHandler.DeleteOwn)
+					})
+					// Admin-only routes
+					r.Group(func(r chi.Router) {
+						r.Use(AdminOnly)
+						r.Get("/all", keysHandler.ListAll)
+						r.Post("/service", keysHandler.CreateServiceAccount)
+						r.Delete("/{id}/any", keysHandler.DeleteAny)
+					})
+				})
+			}
 
 			// User management (admin only)
 			if opts.Config.JWTSecret != "" {
