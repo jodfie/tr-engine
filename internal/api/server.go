@@ -135,11 +135,12 @@ func NewServer(opts ServerOptions) *Server {
 		})
 	}
 
-	// User auth endpoints (login/refresh/logout/setup) — unauthenticated
-	// Login and setup are rate-limited separately (5/min per IP)
+	// User auth endpoints — single AuthHandler instance shared across
+	// unauthenticated routes (login/refresh/logout) and authenticated (/auth/me)
 	authRateLimit := AuthRateLimiter()
+	var authHandler *AuthHandler
 	if opts.Config.JWTSecret != "" {
-		authHandler := NewAuthHandler(opts.DB, []byte(opts.Config.JWTSecret), opts.Log)
+		authHandler = NewAuthHandler(opts.DB, []byte(opts.Config.JWTSecret), opts.Log)
 		r.With(authRateLimit).Post("/api/v1/auth/login", authHandler.Login)
 		r.Post("/api/v1/auth/refresh", authHandler.Refresh)
 		r.Post("/api/v1/auth/logout", authHandler.Logout)
@@ -195,8 +196,7 @@ func NewServer(opts ServerOptions) *Server {
 		// All API routes under /api/v1
 		r.Route("/api/v1", func(r chi.Router) {
 			// Auth: /me requires authentication (handled by outer group)
-			if opts.Config.JWTSecret != "" {
-				authHandler := NewAuthHandler(opts.DB, []byte(opts.Config.JWTSecret), opts.Log)
+			if authHandler != nil {
 				r.Get("/auth/me", authHandler.Me)
 			}
 

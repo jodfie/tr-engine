@@ -47,8 +47,9 @@ func (h *SetupHandler) Setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !database.ValidateUsername(req.Username) {
-		WriteError(w, http.StatusBadRequest, "username must be a valid email address")
+	req.Username = database.NormalizeUsername(req.Username)
+	if req.Username == "" {
+		WriteError(w, http.StatusBadRequest, "username is required")
 		return
 	}
 	if len(req.Password) < 8 {
@@ -56,7 +57,7 @@ func (h *SetupHandler) Setup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), 12)
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		h.log.Error().Err(err).Msg("setup: bcrypt failed")
 		WriteError(w, http.StatusInternalServerError, "internal error")

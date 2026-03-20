@@ -403,9 +403,9 @@ func JWTOrTokenAuth(jwtSecret []byte, writeToken, authToken string, db ...apiKey
 				}
 			}
 
-			// Legacy token path: check write token first (editor), then auth token (viewer)
+			// Legacy token path: check write token first (admin), then auth token (viewer)
 			if writeToken != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(writeToken)) == 1 {
-				r = setAuthContext(r, 0, "", "editor", "token")
+				r = setAuthContext(r, 0, "", "admin", "token")
 				next.ServeHTTP(w, r)
 				return
 			}

@@ -61,10 +61,6 @@ func (h *UsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusBadRequest, "username and password required")
 		return
 	}
-	if !database.ValidateUsername(req.Username) {
-		WriteError(w, http.StatusBadRequest, "username must be a valid email address")
-		return
-	}
 	if len(req.Password) < 8 {
 		WriteError(w, http.StatusBadRequest, "password must be at least 8 characters")
 		return
@@ -77,7 +73,7 @@ func (h *UsersHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), 12)
+	hash, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		h.log.Error().Err(err).Msg("users: bcrypt failed")
 		WriteError(w, http.StatusInternalServerError, "failed to hash password")
