@@ -87,7 +87,7 @@ The official `robotastic/trunk-recorder` Docker image supports arm64 but doesn't
 
 ```yaml
 trunk-recorder:
-    image: ghcr.io/lumenprima/trunk-recorder-mqtt:latest
+    image: ghcr.io/trunk-reporter/trunk-recorder-mqtt:latest
 ```
 
 This is a drop-in replacement — same entrypoint, same config format. It includes trunk-recorder + the MQTT Status plugin pre-compiled for both amd64 and arm64.

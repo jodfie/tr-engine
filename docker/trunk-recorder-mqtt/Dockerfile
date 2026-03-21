@@ -2,7 +2,7 @@
 # trunk-recorder + MQTT Status Plugin — multi-arch (amd64 / arm64)
 #
 # Based on TheGreatCodeholio/trunk-recorder-mqtt with multiarch fixes.
-# Published as ghcr.io/lumenprima/trunk-recorder-mqtt
+# Published as ghcr.io/trunk-reporter/trunk-recorder-mqtt
 ###############################################################################
 
 ###############################################################################

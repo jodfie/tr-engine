@@ -57,7 +57,7 @@ services:
     restart: unless-stopped
 
   tr-engine:
-    image: ghcr.io/lumenprima/tr-engine:latest
+    image: ghcr.io/trunk-reporter/tr-engine:latest
     env_file:
       - path: ./.env
         required: false

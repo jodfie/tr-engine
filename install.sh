@@ -77,7 +77,7 @@ services:
       retries: 5
 
   tr-engine:
-    image: ghcr.io/lumenprima/tr-engine:latest
+    image: ghcr.io/trunk-reporter/tr-engine:latest
     ports:
       - "\${HTTP_PORT:-8080}:8080"
     env_file: .env
