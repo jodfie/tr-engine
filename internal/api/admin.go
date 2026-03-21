@@ -5,6 +5,7 @@ import (
 	"strconv"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/rs/zerolog/hlog"
 	"github.com/snarg/tr-engine/internal/database"
 )
 
@@ -48,6 +49,12 @@ func (h *AdminHandler) MergeSystems(w http.ResponseWriter, r *http.Request) {
 	// Invalidate in-memory identity cache so new messages resolve to the target system
 	if h.onSystemMerge != nil {
 		h.onSystemMerge(req.SourceID, req.TargetID)
+	}
+
+	// Refresh talkgroup stats so analytics reflect the merged data immediately
+	// (otherwise blank until the next hourly cold refresh)
+	if _, err := h.db.RefreshTalkgroupStatsCold(r.Context()); err != nil {
+		hlog.FromRequest(r).Warn().Err(err).Msg("merge: failed to refresh talkgroup stats after merge")
 	}
 
 	WriteJSON(w, http.StatusOK, map[string]any{
