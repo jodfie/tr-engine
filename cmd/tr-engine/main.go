@@ -406,7 +406,11 @@ func main() {
 		log.Warn().Msg("WRITE_TOKEN not set — write endpoints accept the read token")
 	}
 	if cfg.JWTSecret != "" {
-		log.Info().Msg("JWT user authentication enabled")
+		if cfg.JWTSecretGenerated {
+			log.Warn().Msg("JWT_SECRET not configured — auto-generated random secret; all sessions will be invalidated on restart. Set JWT_SECRET in .env for persistent sessions.")
+		} else {
+			log.Info().Msg("JWT user authentication enabled")
+		}
 	}
 
 	// Detect ingest modes and Docker for update checker

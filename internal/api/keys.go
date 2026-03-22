@@ -89,8 +89,8 @@ func (h *KeysHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if req.Role == "" {
 		req.Role = "viewer"
 	}
-	if req.Label == "" {
-		WriteError(w, http.StatusBadRequest, "label is required")
+	if req.Label == "" || len(req.Label) > 255 {
+		WriteError(w, http.StatusBadRequest, "label is required and must be 255 characters or less")
 		return
 	}
 
@@ -99,7 +99,7 @@ func (h *KeysHandler) Create(w http.ResponseWriter, r *http.Request) {
 		WriteError(w, http.StatusForbidden, "cannot create key with higher role than your own")
 		return
 	}
-	if RoleLevel(req.Role) == 0 {
+	if req.Role != "viewer" && req.Role != "editor" && req.Role != "admin" {
 		WriteError(w, http.StatusBadRequest, "invalid role (viewer, editor, admin)")
 		return
 	}
@@ -171,11 +171,11 @@ func (h *KeysHandler) CreateServiceAccount(w http.ResponseWriter, r *http.Reques
 	if req.Role == "" {
 		req.Role = "viewer"
 	}
-	if req.Label == "" {
-		WriteError(w, http.StatusBadRequest, "label is required")
+	if req.Label == "" || len(req.Label) > 255 {
+		WriteError(w, http.StatusBadRequest, "label is required and must be 255 characters or less")
 		return
 	}
-	if RoleLevel(req.Role) == 0 {
+	if req.Role != "viewer" && req.Role != "editor" && req.Role != "admin" {
 		WriteError(w, http.StatusBadRequest, "invalid role (viewer, editor, admin)")
 		return
 	}

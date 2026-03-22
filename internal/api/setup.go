@@ -33,8 +33,8 @@ func (h *SetupHandler) Setup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Username = database.NormalizeUsername(req.Username)
-	if req.Username == "" {
-		WriteError(w, http.StatusBadRequest, "username is required")
+	if len(req.Username) < 3 {
+		WriteError(w, http.StatusBadRequest, "username must be at least 3 characters")
 		return
 	}
 	if len(req.Password) < 8 {

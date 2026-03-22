@@ -59,9 +59,10 @@ type Config struct {
 	WriteToken         string `env:"WRITE_TOKEN"` // separate token for write operations; if not set, writes use AuthToken
 
 	// User authentication (optional — disabled when ADMIN_PASSWORD is empty)
-	JWTSecret     string `env:"JWT_SECRET"`      // HMAC key for JWT signing; auto-generated if empty (sessions lost on restart)
-	AdminUsername string `env:"ADMIN_USERNAME" envDefault:"admin"` // default admin username seeded on first run
-	AdminPassword string `env:"ADMIN_PASSWORD"` // if set, seeds admin user on first run and enables JWT auth
+	JWTSecret          string `env:"JWT_SECRET"`      // HMAC key for JWT signing; auto-generated if empty (sessions lost on restart)
+	JWTSecretGenerated bool   // true when auto-generated (not from env/config)
+	AdminUsername      string `env:"ADMIN_USERNAME" envDefault:"admin"` // default admin username seeded on first run
+	AdminPassword      string `env:"ADMIN_PASSWORD"` // if set, seeds admin user on first run and enables JWT auth
 	RateLimitRPS   float64 `env:"RATE_LIMIT_RPS" envDefault:"20"`
 	RateLimitBurst int     `env:"RATE_LIMIT_BURST" envDefault:"40"`
 	CORSOrigins string `env:"CORS_ORIGINS"` // comma-separated allowed origins; empty = allow all (*)
@@ -238,6 +239,7 @@ func Load(overrides Overrides) (*Config, error) {
 		b := make([]byte, 32)
 		if _, err := rand.Read(b); err == nil {
 			cfg.JWTSecret = base64.URLEncoding.EncodeToString(b)
+			cfg.JWTSecretGenerated = true
 		}
 	}
 

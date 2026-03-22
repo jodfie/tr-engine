@@ -57,12 +57,12 @@ func (h *QueryHandler) ExecuteQuery(w http.ResponseWriter, r *http.Request) {
 		req.Params = []any{}
 	}
 
-	log.Info().Str("sql", sql).Int("limit", maxRows).Msg("executing query")
+	log.Debug().Str("sql", sql).Int("limit", maxRows).Msg("executing query")
 
 	result, err := h.db.ExecuteReadOnlyQuery(r.Context(), sql, req.Params, maxRows)
 	if err != nil {
 		log.Warn().Err(err).Str("sql", sql).Msg("query failed")
-		WriteErrorWithCodeDetail(w, http.StatusBadRequest, ErrQueryFailed, "query failed", err.Error())
+		WriteErrorWithCodeDetail(w, http.StatusBadRequest, ErrQueryFailed, "query failed", "invalid SQL or parameters")
 		return
 	}
 
