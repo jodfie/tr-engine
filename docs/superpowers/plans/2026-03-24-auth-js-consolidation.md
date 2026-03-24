@@ -4,7 +4,7 @@
 
 **Goal:** Centralize all web UI auth handling in `auth.js` so pages never handle auth errors themselves.
 
-**Architecture:** `auth.js` auto-detects legacy token vs JWT mode, patches `fetch()` to inject the right token for reads vs writes, intercepts 401/403 responses with transparent retry after prompting, and owns a single auth modal. Per-page auth code is removed from 4 pages.
+**Architecture:** `auth.js` auto-detects legacy token vs JWT mode, patches `fetch()` to inject the right token for reads vs writes, intercepts 401/403 responses with transparent retry after prompting, and owns a single auth modal. Per-page auth code is removed from 7 pages (units, events, talkgroup-directory, playground, omnitrunker, omnitrunker-classic, timeline).
 
 **Tech Stack:** Vanilla JS (no build step), localStorage, existing `/api/v1/auth-init` and `/api/v1/auth/login` endpoints.
 
@@ -19,9 +19,9 @@
 
 This is the foundation. Everything else depends on it.
 
-- [ ] **Step 1: Back up existing auth.js and start fresh**
+- [ ] **Step 1: Start the rewrite (git history serves as backup)**
 
-Save the old file for reference, then write the new `auth.js`. The structure:
+Write the new `auth.js`. The structure:
 
 ```
 1. Constants (localStorage keys)
@@ -207,7 +207,7 @@ Same as current but uses `effectiveToken('GET')`:
 
 - [ ] **Step 5: Write the modal UI using safe DOM APIs**
 
-Build the modal entirely with `document.createElement` and `textContent` (no innerHTML). The modal renders differently for each prompt type: login (username + password), token (single password), write-token (single password), and insufficient (message only).
+Build the modal entirely with `document.createElement` and `textContent` (no innerHTML/XSS-safe). The modal renders differently for each prompt type: login (username + password), token (single password), write-token (single password), and insufficient (message only).
 
 See spec Section "Prompt UI" for the four modal states.
 
@@ -218,6 +218,8 @@ Key implementation notes:
 - Store `modalCallback` to call on submit — this resolves the pending promise and triggers retry
 - `doLogin()` POSTs to `/api/v1/auth/login`, stores access_token in `STORAGE_JWT`
 - `submitToken(storageKey)` stores to the appropriate localStorage key and updates in-memory state
+- **All modal types get a Cancel/Close button** that dismisses the modal and lets the original 401/403 response propagate to the page's error handler. For "insufficient permissions" the only button is "OK" (dismiss). For token/login prompts, a secondary "Cancel" button sits beside Submit.
+- Clicking the overlay background also dismisses (calls the cancel path)
 
 - [ ] **Step 6: Write the public API**
 
@@ -290,7 +292,7 @@ Delete the `<div id="auth-prompt" class="auth-prompt">` block (lines ~512-518).
 Remove:
 - `let authToken = localStorage.getItem('tr-engine-token') || '';` (line ~569)
 - `const authPrompt = ...`, `const authTokenInput = ...`, `const authSubmitBtn = ...` (lines ~592-594)
-- `function authHeaders()` (lines ~600-604) — replace all calls with `{}` (auth.js patches fetch globally)
+- `function authHeaders()` (lines ~600-604) — and replace **all 7 call sites** with `{}`: lines ~1015, 1045, 1111, 1172, 1201, 1499, 1554 (search for `authHeaders()` to find them all)
 - `function showAuth()` (lines ~1659-1663)
 - `function hideAuth()` (lines ~1665-1667)
 - `authSubmitBtn.addEventListener(...)` block (lines ~1669-1674)
@@ -305,7 +307,7 @@ if (authToken) params.set('token', authToken);
 // After: remove this line — auth.js patches EventSource
 ```
 
-- [ ] **Step 5: Remove 403 handling from fetch calls**
+- [ ] **Step 5: Remove 401/403 handling from fetch calls**
 
 In the bootstrap `fetchJSON()` function (~line 1498-1507), remove the 401/403 check:
 ```js
@@ -318,10 +320,11 @@ if (resp.status === 401 || resp.status === 403) {
 
 Similarly remove the 401/403 check in the talkgroup units fetch (~line 1555).
 
-In `saveUnitTag()` (~line 1112-1118), remove the PR #5 403 handling block and the `if (err.message === 'auth') return;` in the catch.
+Note: `saveUnitTag()` (~line 1108) has no custom 403 handling — it just does `if (!r.ok) throw new Error(...)` which is fine as-is. auth.js intercepts the 403 before the page sees it.
 
-- [ ] **Step 6: Remove SSE error auth check**
+- [ ] **Step 6: Remove SSE auth code**
 
+In EventSource `onopen` handler (~line 1617), remove the `hideAuth()` call.
 In EventSource `onerror` handler (~line 1622-1627), remove the `showAuth()` call. Keep the `eventSource.close()`.
 
 - [ ] **Step 7: Test in browser**
@@ -400,12 +403,15 @@ Delete the write-token button (line ~298) and write-token-row div (lines ~303-30
 - [ ] **Step 3: Remove write-token JS**
 
 Remove:
+- `function getAuthHeaders()` (lines ~393-396) — duplicates auth.js's fetch patch
 - `function getWriteHeaders()` (lines ~397-401)
 - Write token UI variables and event listeners (lines ~404-440)
 
-- [ ] **Step 4: Simplify import fetch**
+- [ ] **Step 4: Simplify all fetch calls**
 
-In the CSV import fetch call (~line 635), replace `headers: getWriteHeaders()` with `headers: {}`.
+Replace all `{ headers: getAuthHeaders() }` calls (lines ~445, 474) with `{}`.
+Replace `headers: getWriteHeaders()` in the CSV import fetch (~line 635) with `{}`.
+Search for any remaining `getAuthHeaders` or `getWriteHeaders` references.
 
 - [ ] **Step 5: Test in browser**
 
@@ -474,7 +480,103 @@ auth.js now handles write-token prompting centrally on 403."
 
 ---
 
-### Task 6: Verify irc-radio-live.html works without changes
+### Task 6: Remove auth code from omnitrunker.html
+
+**Files:**
+- Modify: `web/omnitrunker.html`
+
+Same pattern as units.html — has `.auth-prompt` CSS, auth-prompt HTML, `showAuth()`, `authToken`, manual SSE token injection.
+
+- [ ] **Step 1: Remove auth prompt CSS**
+
+Delete `.auth-prompt` and `.auth-box` CSS (lines ~84-85 and surrounding block).
+
+- [ ] **Step 2: Remove auth prompt HTML**
+
+Delete `<div id="auth-prompt" class="auth-prompt">` block (line ~901 area).
+
+- [ ] **Step 3: Remove auth JS**
+
+Remove `authToken` variable (~line 1202), `showAuth()` function (~line 1916), manual token SSE param (~lines 1946-1947), `showAuth()` in SSE onerror (~line 1967). Remove `authHeaders()` and replace all call sites with `{}`.
+
+- [ ] **Step 4: Test in browser**
+
+Open omnitrunker.html. Verify page loads and SSE connects.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add web/omnitrunker.html
+git commit -m "refactor: remove per-page auth handling from omnitrunker.html"
+```
+
+---
+
+### Task 7: Remove auth code from omnitrunker-classic.html
+
+**Files:**
+- Modify: `web/omnitrunker-classic.html`
+
+Same pattern — auth-prompt CSS/HTML, `showAuth()`, `authToken`, manual SSE token.
+
+- [ ] **Step 1: Remove auth prompt CSS**
+
+Delete `.auth-prompt` CSS (lines ~84-85 area).
+
+- [ ] **Step 2: Remove auth prompt HTML**
+
+Delete `<div id="auth-prompt">` block (~line 427 area).
+
+- [ ] **Step 3: Remove auth JS**
+
+Remove `authToken` (~line 460), `showAuth()` (~line 888), manual SSE token param (~lines 918-919), `showAuth()` in onerror (~line 939). Remove `authHeaders()` and replace all call sites with `{}`.
+
+- [ ] **Step 4: Test in browser**
+
+Open omnitrunker-classic.html. Verify page loads.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add web/omnitrunker-classic.html
+git commit -m "refactor: remove per-page auth handling from omnitrunker-classic.html"
+```
+
+---
+
+### Task 8: Remove auth code from timeline.html
+
+**Files:**
+- Modify: `web/timeline.html`
+
+Same pattern — auth-prompt CSS/HTML, `showAuth()`, `authToken`, manual SSE token.
+
+- [ ] **Step 1: Remove auth prompt CSS**
+
+Delete `.auth-prompt` CSS (lines ~303-304 area).
+
+- [ ] **Step 2: Remove auth prompt HTML**
+
+Delete `<div id="auth-prompt">` block (~line 394 area).
+
+- [ ] **Step 3: Remove auth JS**
+
+Remove `authToken` (~line 479), `showAuth()` (~line 1138), manual SSE token param (~line 1146). Remove `authHeaders()` and replace all call sites with `{}`.
+
+- [ ] **Step 4: Test in browser**
+
+Open timeline.html. Verify page loads and timeline renders.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add web/timeline.html
+git commit -m "refactor: remove per-page auth handling from timeline.html"
+```
+
+---
+
+### Task 9: Verify irc-radio-live.html works without changes
 
 **Files:**
 - Read (no modify): `web/irc-radio-live.html`
@@ -497,7 +599,7 @@ If irc-radio-live.html does anything that bypasses the patched fetch, note for f
 
 ---
 
-### Task 7: Final verification sweep
+### Task 10: Final verification sweep
 
 - [ ] **Step 1: Verify no page has `id="auth-prompt"` anymore**
 
@@ -532,7 +634,7 @@ git commit -m "chore: verify no page-level auth prompts remain"
 
 ---
 
-### Task 8: End-to-end testing
+### Task 11: End-to-end testing
 
 - [ ] **Step 1: Test legacy mode — read-only access**
 
