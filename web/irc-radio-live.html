@@ -9,8 +9,15 @@
 <meta name="card-description" content="IRC-style live radio monitor with channels, nicks, and audio playback">
 <meta name="card-order" content="0">
 <script src="theme-config.js"></script>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Iosevka:wght@400;500&display=swap" rel="stylesheet">
 <style>
+:root {
+  --irc-accent: var(--accent);
+  --irc-accent-light: var(--accent-light);
+  --irc-info: var(--info);
+  --irc-warning: var(--warning);
+  --irc-success: var(--success);
+  --irc-danger: var(--danger);
+}
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
 html, body { height: 100%; overflow: hidden; }
@@ -73,17 +80,45 @@ body::after {
   flex-shrink: 0;
   user-select: none;
 }
-.titlebar .server { color: var(--cyan); font-weight: 500; }
+.titlebar .server { color: var(--irc-info); font-weight: 500; }
 .titlebar .topic { color: var(--text-muted); margin-left: 8px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .titlebar .lag { color: var(--warning); margin-left: auto; }
 
 /* ── Main layout ── */
 .main { display: flex; flex: 1; overflow: hidden; }
 
+.panel-resizer {
+  width: 6px;
+  flex: 0 0 6px;
+  cursor: col-resize;
+  position: relative;
+  background: transparent;
+  user-select: none;
+  touch-action: none;
+}
+.panel-resizer::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 2px;
+  background: var(--border);
+  opacity: 0.45;
+  transition: opacity 0.15s, background 0.15s;
+}
+.panel-resizer:hover::before,
+.panel-resizer.dragging::before {
+  opacity: 1;
+  background: var(--irc-info);
+}
+
 /* ── Channel tree (left panel) ── */
 .channel-tree {
-  width: 240px;
-  min-width: 240px;
+  width: var(--channel-tree-width, 240px);
+  flex: 0 0 var(--channel-tree-width, 240px);
+  min-width: 180px;
+  max-width: 50vw;
   background: var(--bg-surface);
   border-right: 1px solid var(--border);
   display: flex;
@@ -116,7 +151,7 @@ body::after {
   cursor: pointer;
   transition: color 0.15s, border-color 0.15s;
 }
-.read-all-btn:hover { color: var(--cyan); border-color: var(--cyan); }
+.read-all-btn:hover { color: var(--irc-info); border-color: var(--irc-info); }
 .tree-search {
   padding: 3px 8px;
   border-bottom: 1px solid var(--border);
@@ -136,7 +171,7 @@ body::after {
   padding: 2px 6px;
   outline: none;
 }
-.tree-search-input:focus { border-color: var(--cyan); }
+.tree-search-input:focus { border-color: var(--irc-info); }
 .tree-search-input::placeholder { color: var(--text-faint); }
 .tree-search-clear {
   cursor: pointer;
@@ -190,12 +225,12 @@ body::after {
 }
 .channel-item:hover { background: var(--bg-elevated); color: var(--text); }
 .channel-item.active { color: var(--text); background: var(--bg-elevated); font-weight: 500; }
-.channel-item.has-activity { color: var(--orange); }
+.channel-item.has-activity { color: var(--irc-warning); }
 .channel-item .chan-prefix { color: var(--text-muted); }
 .channel-item .chan-label { overflow: hidden; text-overflow: ellipsis; }
 .channel-item .unread {
   margin-left: auto; font-size: 10px; color: var(--bg);
-  background: var(--orange); border-radius: 3px;
+  background: var(--irc-warning); border-radius: 3px;
   padding: 0 3px; min-width: 12px; text-align: center; font-weight: 600;
   flex-shrink: 0;
 }
@@ -229,7 +264,7 @@ body::after {
   text-decoration: underline;
 }
 .group-unread {
-  background: var(--orange);
+  background: var(--irc-warning);
   color: var(--bg);
   font-size: 9px;
   font-weight: 600;
@@ -251,7 +286,7 @@ body::after {
 }
 .channel-item:hover .scan-icon,
 .scan-icon.active { opacity: 1; }
-.scan-icon.active { color: var(--green); }
+.scan-icon.active { color: var(--irc-success); }
 
 .scanner-btn {
   background: none;
@@ -265,8 +300,8 @@ body::after {
   margin-left: 4px;
 }
 .scanner-btn.active {
-  color: var(--green);
-  border-color: var(--green);
+  color: var(--irc-success);
+  border-color: var(--irc-success);
 }
 .scanner-queue-info {
   color: var(--text-muted);
@@ -372,7 +407,7 @@ body::after {
 .date-separator::before { left: 14px; }
 .date-separator::after { right: 14px; }
 .msg .nick {
-  font-weight: 500; min-width: 130px; max-width: 130px; text-align: right;
+  font-weight: 500; min-width: 130px; max-width: 430px; text-align: right;
   padding-right: 8px; flex-shrink: 0;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
@@ -423,7 +458,7 @@ body::after {
   background: var(--bg);
   flex-shrink: 0;
 }
-.typing-bar .typing-nick { color: var(--cyan); }
+.typing-bar .typing-nick { color: var(--irc-info); }
 
 /* ── Audio player bar ── */
 .player-bar {
@@ -442,7 +477,7 @@ body::after {
 .player-btn {
   background: none;
   border: 1px solid var(--border-hover);
-  color: var(--cyan);
+  color: var(--irc-info);
   font-size: 14px;
   width: 26px;
   height: 22px;
@@ -455,9 +490,9 @@ body::after {
   font-family: inherit;
   transition: border-color 0.15s, color 0.15s;
 }
-.player-btn:hover { border-color: var(--cyan); color: var(--text); }
+.player-btn:hover { border-color: var(--irc-info); color: var(--text); }
 .player-btn.player-skip { color: var(--text-mid); font-size: 12px; width: 22px; }
-.player-btn.player-skip:hover { border-color: var(--green); color: var(--green); }
+.player-btn.player-skip:hover { border-color: var(--irc-success); color: var(--irc-success); }
 .player-btn.player-close { color: var(--text-mid); font-size: 13px; width: 22px; }
 .player-btn.player-close:hover { color: var(--danger); border-color: var(--danger); }
 .player-info {
@@ -468,7 +503,7 @@ body::after {
   min-width: 0;
   flex-shrink: 0;
 }
-.player-nick { color: var(--cyan); font-weight: 500; }
+.player-nick { color: var(--irc-info); font-weight: 500; }
 .player-chan { color: var(--text-muted); }
 .player-time { color: var(--text-mid); font-size: 13px; font-variant-numeric: tabular-nums; }
 .player-progress {
@@ -482,7 +517,7 @@ body::after {
 }
 .player-progress-fill {
   height: 100%;
-  background: var(--cyan);
+  background: var(--irc-info);
   border-radius: 2px;
   width: 0%;
   transition: width 0.1s linear;
@@ -501,7 +536,7 @@ body::after {
 }
 
 /* ── Voice message links ── */
-.voice-play { color: var(--cyan); font-size: 15px; margin-right: 2px; cursor: pointer; }
+.voice-play { color: var(--irc-info); font-size: 15px; margin-right: 2px; cursor: pointer; }
 .voice-dur { color: var(--text); }
 .voice-listen {
   color: var(--text-mid);
@@ -511,13 +546,13 @@ body::after {
   margin-left: 4px;
   transition: color 0.15s;
 }
-.voice-listen:hover { color: var(--cyan); border-bottom-color: var(--cyan); }
+.voice-listen:hover { color: var(--irc-info); border-bottom-color: var(--irc-info); }
 .voice-text { color: var(--text); }
 .voice-controls { color: var(--text-muted); font-size: 14px; margin-left: 6px; white-space: nowrap; }
 .voice-controls .voice-play { font-size: 13px; }
 .voice-controls .voice-listen { margin-left: 2px; }
-.msg.now-playing { background: color-mix(in srgb, var(--cyan) 4%, transparent); }
-.msg.now-playing .voice-listen { color: var(--cyan); border-bottom-color: var(--cyan); }
+.msg.now-playing { background: color-mix(in srgb, var(--irc-info) 4%, transparent); }
+.msg.now-playing .voice-listen { color: var(--irc-info); border-bottom-color: var(--irc-info); }
 
 /* ── Input ── */
 .input-area {
@@ -543,14 +578,16 @@ body::after {
   font-family: inherit;
   font-size: 16px;
   padding: 8px 8px;
-  caret-color: var(--cyan);
+  caret-color: var(--irc-info);
 }
 .input-field::placeholder { color: var(--text-muted); }
 
 /* ── Nicklist ── */
 .nicklist {
-  width: 164px;
-  min-width: 164px;
+  width: var(--nicklist-width, 164px);
+  flex: 0 0 var(--nicklist-width, 164px);
+  min-width: 140px;
+  max-width: 40vw;
   background: var(--bg-surface);
   border-left: 1px solid var(--border);
   display: flex;
@@ -593,11 +630,11 @@ body::after {
 }
 .nick-item:hover { background: var(--bg-elevated); }
 .nick-item .nick-prefix { color: var(--text-muted); font-size: 13px; margin-right: 2px; }
-.nick-item.op { color: var(--cyan); }
-.nick-item.voice { color: var(--green); }
+.nick-item.op { color: var(--irc-info); }
+.nick-item.voice { color: var(--irc-success); }
 .nick-item.regular { color: var(--text-mid); }
 .nick-item.offline { opacity: 0.35; }
-.nick-item.talked::after { content: '●'; color: var(--green); font-size: 10px; margin-left: 4px; vertical-align: middle; }
+.nick-item.talked::after { content: '●'; color: var(--irc-success); font-size: 10px; margin-left: 4px; vertical-align: middle; }
 
 /* ── Nick tooltip ── */
 .nick-tooltip {
@@ -608,9 +645,9 @@ body::after {
   max-width: 260px; white-space: nowrap;
   box-shadow: var(--shadow-panel);
 }
-.nick-tooltip .tt-nick { color: var(--cyan); font-weight: 600; }
+.nick-tooltip .tt-nick { color: var(--irc-info); font-weight: 600; }
 .nick-tooltip .tt-label { color: var(--text-muted); }
-.nick-tooltip .tt-online { color: var(--green); }
+.nick-tooltip .tt-online { color: var(--irc-success); }
 .nick-tooltip .tt-offline { color: var(--text-faint); }
 .msg .nick { cursor: pointer; }
 .nick-item { cursor: pointer; }
@@ -645,7 +682,7 @@ body::after {
   color: var(--text);
 }
 .unit-modal-nick {
-  font-size: 14px; color: var(--cyan);
+  font-size: 14px; color: var(--irc-info);
 }
 .unit-modal-system {
   font-size: 11px; color: var(--text-muted);
@@ -661,10 +698,10 @@ body::after {
   border-radius: 4px; color: var(--text);
   font-family: inherit; font-size: 13px;
 }
-.unit-modal-tag-input:focus { outline: none; border-color: var(--cyan); }
+.unit-modal-tag-input:focus { outline: none; border-color: var(--irc-info); }
 .unit-modal-tag-input::placeholder { color: var(--text-faint); }
 .unit-modal-save {
-  padding: 6px 14px; background: var(--cyan); border: none;
+  padding: 6px 14px; background: var(--irc-info); border: none;
   border-radius: 4px; color: #000;
   font-size: 12px; font-weight: 600; cursor: pointer;
   transition: filter 0.15s, opacity 0.15s;
@@ -706,12 +743,12 @@ body::after {
   border-radius: 3px; white-space: nowrap; flex-shrink: 0;
   min-width: 36px; text-align: center;
 }
-.unit-event-type.state-active { background: var(--green); color: #000; }
-.unit-event-type.state-recent { background: color-mix(in srgb, var(--green) 60%, var(--bg-surface)); color: #000; }
-.unit-event-type.state-affiliated { background: var(--cyan); color: #000; }
-.unit-event-type.state-location { background: var(--orange); color: #000; }
-.unit-event-type.state-data { background: color-mix(in srgb, var(--orange) 65%, var(--bg-surface)); color: #000; }
-.unit-event-type.state-signal { background: var(--orange); color: #000; }
+.unit-event-type.state-active { background: var(--irc-success); color: #000; }
+.unit-event-type.state-recent { background: color-mix(in srgb, var(--irc-success) 60%, var(--bg-surface)); color: #000; }
+.unit-event-type.state-affiliated { background: var(--irc-info); color: #000; }
+.unit-event-type.state-location { background: var(--irc-warning); color: #000; }
+.unit-event-type.state-data { background: color-mix(in srgb, var(--irc-warning) 65%, var(--bg-surface)); color: #000; }
+.unit-event-type.state-signal { background: var(--irc-warning); color: #000; }
 .unit-event-type.state-off { background: var(--text-faint); color: var(--bg-surface); }
 .unit-event-tg {
   color: var(--text-muted); white-space: nowrap; overflow: hidden;
@@ -737,7 +774,7 @@ body::after {
   user-select: none;
 }
 .statusbar .sep { color: var(--border-hover); }
-.statusbar .status-highlight { color: var(--orange); }
+.statusbar .status-highlight { color: var(--irc-warning); }
 .statusbar .status-ok { color: var(--success); }
 .statusbar .status-err { color: var(--danger); }
 .statusbar .nerd-btn {
@@ -753,7 +790,7 @@ body::after {
   margin-left: auto;
   transition: color 0.15s, border-color 0.15s;
 }
-.statusbar .nerd-btn:hover { color: var(--cyan); border-color: var(--cyan); }
+.statusbar .nerd-btn:hover { color: var(--irc-info); border-color: var(--irc-info); }
 html.nerd .statusbar .nerd-btn { color: var(--magenta); border-color: var(--magenta); }
 
 /* ── Hipster nerd cool mode — tiny text ── */
@@ -828,6 +865,8 @@ html.nerd .statusbar .nerd-btn { font-size: 9px; }
     left: 0;
     bottom: 0;
     width: 280px;
+    flex: none;
+    max-width: none;
     z-index: 1000;
     transform: translateX(-100%);
     transition: transform 0.25s ease;
@@ -845,6 +884,8 @@ html.nerd .statusbar .nerd-btn { font-size: 9px; }
     right: 0;
     bottom: 0;
     width: 240px;
+    flex: none;
+    max-width: none;
     z-index: 1000;
     transform: translateX(100%);
     transition: transform 0.25s ease;
@@ -911,14 +952,17 @@ html.nerd .statusbar .nerd-btn { font-size: 9px; }
     font-size: 11px;
     min-width: auto;
   }
-  .msg .nick {
-    font-weight: 600;
-    max-width: none !important;
-    width: auto !important;
-    min-width: auto;
-    text-align: left;
-    padding-right: 60px; /* space for timestamp */
-  }
+ .msg .nick {
+   font-weight: 500;
+   flex: 0 1 auto;
+   min-width: 0;
+   max-width: min(40vw, 320px);
+   text-align: right;
+   padding-right: 8px;
+   overflow: hidden;
+   text-overflow: ellipsis;
+   white-space: nowrap;
+}
   .msg .body {
     padding-left: 0;
     font-size: 14px;
@@ -935,6 +979,10 @@ html.nerd .statusbar .nerd-btn { font-size: 9px; }
   .mobile-hamburger { display: none; }
   .mobile-users-btn { display: none; }
   .drawer-backdrop { display: none !important; }
+}
+
+@media (max-width: 768px) {
+  .panel-resizer { display: none; }
 }
 </style>
 </head>
@@ -953,7 +1001,7 @@ html.nerd .statusbar .nerd-btn { font-size: 9px; }
 
 <div class="main">
   <div class="drawer-backdrop" id="drawer-backdrop"></div>
-  <div class="channel-tree">
+  <div class="channel-tree" id="channel-tree">
     <div class="tree-header-row">
       <span class="tree-header-text">tr-engine</span>
       <button class="read-all-btn" id="read-all-btn">Read All</button>
@@ -968,8 +1016,9 @@ html.nerd .statusbar .nerd-btn { font-size: 9px; }
       <span class="dot connecting"></span>Connecting...
     </div>
   </div>
+  <div class="panel-resizer left" id="channel-resizer" aria-hidden="true"></div>
 
-  <div class="chat-area">
+  <div class="chat-area" id="chat-area">
     <div class="channel-bar">
       <span class="chan-name" id="chan-name">*status</span>
       <button class="chan-edit-btn" id="chan-edit-btn" title="Edit channel name">&#9998;</button>
@@ -1000,7 +1049,8 @@ html.nerd .statusbar .nerd-btn { font-size: 9px; }
     </div>
   </div>
 
-  <div class="nicklist">
+  <div class="panel-resizer right" id="nicklist-resizer" aria-hidden="true"></div>
+  <div class="nicklist" id="nicklist">
     <div class="nicklist-header" id="nicklist-header">Users</div>
     <div class="nicklist-entries" id="nicklist-entries"></div>
   </div>
@@ -1078,7 +1128,7 @@ const DEFAULT_OP_PATTERNS = 'LocutionLCD,\\dCOM,CHF,CAPT,BATT,Desk';
 
 // ── Nick color palette ──
 const NICK_COLORS = [
-  'var(--cyan)', 'var(--green)', 'var(--orange)',
+  'var(--irc-info)', 'var(--irc-success)', 'var(--irc-warning)',
   'var(--magenta)', 'var(--warning)', 'var(--info)',
   'var(--danger)', 'var(--success)', 'var(--rose)', 'var(--lime)',
 ];
@@ -1164,6 +1214,11 @@ const statusUsersEl = document.getElementById('status-users');
 const statusRate = document.getElementById('status-rate');
 const statusTime = document.getElementById('status-time');
 const inputPrompt = document.getElementById('input-prompt');
+const mainEl = document.querySelector('.main');
+const channelTreeEl = document.getElementById('channel-tree');
+const nicklistEl = document.getElementById('nicklist');
+const channelResizerEl = document.getElementById('channel-resizer');
+const nicklistResizerEl = document.getElementById('nicklist-resizer');
 
 // Search state
 let treeSearchQuery = '';
@@ -1706,19 +1761,43 @@ function saveUnitTag(user, newTag) {
       tagInput._originalTag = newTag;
       saveBtn.disabled = true;
       saveStatus.textContent = '\u2713';
-      saveStatus.style.color = 'var(--green)';
+      saveStatus.style.color = 'var(--irc-success)';
       setTimeout(() => { saveStatus.textContent = ''; }, 2000);
 
-      // Bust nick cache and update nick across all channels
+      // Bust nick cache and update nick across users + already-rendered messages
       const uk = unitKey(user.systemId, user.unitId);
+      const oldNick = user.nick;
       unitNickCache.delete(uk);
       const newNick = resolveNick(user.systemId, user.unitId, newTag);
-      for (const ch of channels.values()) {
+
+      for (const [chanName, ch] of channels) {
         if (ch.users.has(uk)) {
           ch.users.get(uk).nick = newNick;
         }
+        let changed = false;
+        for (const msg of ch.messages) {
+          if (msg.nick === oldNick) {
+            msg.nick = newNick;
+            changed = true;
+            if (chanName === activeChannel && msg._el) {
+              const nickNode = msg._el.querySelector('.nick');
+              if (nickNode) {
+                nickNode.textContent = newNick;
+                nickNode.dataset.nick = newNick;
+                nickNode.style.color = nickColor(newNick);
+              } else {
+                refreshMsgEl(msg);
+              }
+            }
+          }
+        }
+        if (changed && chanName !== activeChannel && chanName === STARRED_CHANNEL) {
+          // no-op, kept for symmetry with aggregated channel updates
+        }
       }
+
       user.nick = newNick;
+      user.alphaTag = newTag;
       document.getElementById('unit-modal-nick').textContent = newNick;
       renderNicklist();
     })
@@ -1944,9 +2023,8 @@ function addMsg(channel, msg, skipForward) {
   }
 
   if (channel === activeChannel) {
-    appendMsgDOM(msg);
-    // Auto-scroll if near bottom
     const atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
+    appendMsgDOM(msg);
     if (atBottom) messagesEl.scrollTop = messagesEl.scrollHeight;
   } else {
     channelUnread.set(channel, (channelUnread.get(channel) || 0) + 1);
@@ -2026,6 +2104,10 @@ function buildMsgEl(m) {
         const play = document.createElement('span');
         play.className = 'voice-play';
         play.textContent = '▶';
+        play.addEventListener('click', (e) => {
+          e.preventDefault();
+          playCall(m.callId, m.nick, m.channel, div, m.pos, m.txDuration);
+        });
         body.appendChild(play);
 
         if (dur) {
@@ -2978,11 +3060,98 @@ async function fetchJSON(path) {
   return res.json();
 }
 
+function extractCollectionItems(payload, preferredKeys = []) {
+  if (!payload || typeof payload !== 'object') return [];
+  if (Array.isArray(payload.items)) return payload.items;
+  for (const key of preferredKeys) {
+    if (Array.isArray(payload[key])) return payload[key];
+  }
+  for (const [key, value] of Object.entries(payload)) {
+    if (['total', 'limit', 'offset'].includes(key)) continue;
+    if (Array.isArray(value)) return value;
+  }
+  return [];
+}
+
+async function fetchPaginatedCollection(path, preferredKeys = [], pageLimit = 1000) {
+  const collected = [];
+  let offset = 0;
+  let total = Infinity;
+
+  while (offset < total) {
+    const joiner = path.includes('?') ? '&' : '?';
+    const payload = await fetchJSON(`${path}${joiner}limit=${pageLimit}&offset=${offset}`);
+    const items = extractCollectionItems(payload, preferredKeys);
+
+    if (!items.length) break;
+
+    collected.push(...items);
+
+    const pageTotal = Number.isFinite(payload.total) ? payload.total : Number(payload.total);
+    total = Number.isFinite(pageTotal) && pageTotal > 0 ? pageTotal : offset + items.length;
+    offset += items.length;
+
+    if (items.length < pageLimit) break;
+  }
+
+  return collected;
+}
+
+function applyPanelWidth(varName, width) {
+  document.documentElement.style.setProperty(varName, `${Math.round(width)}px`);
+}
+
+function isMobileLayout() {
+  return window.matchMedia('(max-width: 768px)').matches;
+}
+
+function initResizablePanels() {
+  const savedLeft = parseInt(localStorage.getItem('irc.channelTreeWidth') || '240', 10);
+  const savedRight = parseInt(localStorage.getItem('irc.nicklistWidth') || '164', 10);
+  applyPanelWidth('--channel-tree-width', Math.max(180, Math.min(savedLeft || 240, Math.max(180, Math.floor(window.innerWidth * 0.5)))));
+  applyPanelWidth('--nicklist-width', Math.max(140, Math.min(savedRight || 164, Math.max(140, Math.floor(window.innerWidth * 0.4)))));
+
+  function attachResizer(handle, side) {
+    if (!handle) return;
+    handle.addEventListener('pointerdown', (ev) => {
+      if (isMobileLayout()) return;
+      ev.preventDefault();
+      handle.classList.add('dragging');
+      document.body.style.cursor = 'col-resize';
+
+      const onMove = (moveEv) => {
+        const vw = window.innerWidth;
+        if (side === 'left') {
+          const width = Math.max(180, Math.min(moveEv.clientX, Math.floor(vw * 0.5)));
+          applyPanelWidth('--channel-tree-width', width);
+          localStorage.setItem('irc.channelTreeWidth', String(Math.round(width)));
+        } else {
+          const width = Math.max(140, Math.min(vw - moveEv.clientX, Math.floor(vw * 0.4)));
+          applyPanelWidth('--nicklist-width', width);
+          localStorage.setItem('irc.nicklistWidth', String(Math.round(width)));
+        }
+      };
+
+      const stop = () => {
+        handle.classList.remove('dragging');
+        document.body.style.cursor = '';
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', stop);
+      };
+
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', stop, { once: true });
+    });
+  }
+
+  attachResizer(channelResizerEl, 'left');
+  attachResizer(nicklistResizerEl, 'right');
+}
+
 async function bootstrapChannels() {
   serverMsg(`Fetching channel list from ${API_BASE}/talkgroups...`);
   try {
-    const data = await fetchJSON('/talkgroups?limit=1000&sort=alpha_tag');
-    const tgs = data.talkgroups || [];
+    const tgs = await fetchPaginatedCollection('/talkgroups?sort=alpha_tag', ['talkgroups'], 1000);
     serverMsg(`Received ${tgs.length} talkgroups`);
 
     for (const tg of tgs) {
@@ -3059,8 +3228,7 @@ async function bootstrapAffiliations() {
 async function bootstrapUnitNicks() {
   serverMsg('Fetching unit directory...');
   try {
-    const data = await fetchJSON('/units?limit=5000');
-    const units = data.units || [];
+    const units = await fetchPaginatedCollection('/units?sort=alpha_tag', ['units'], 1000);
     let seeded = 0;
     for (const u of units) {
       if (u.alpha_tag && u.alpha_tag.trim()) {
@@ -3231,16 +3399,27 @@ function connectSSE() {
     // Silent — could log to *status if desired
   });
 
-  es.addEventListener('rate_update', (e) => {
-    lastEventId = e.lastEventId;
-    try {
-      const data = JSON.parse(e.data);
-      if (data.decode_rate !== undefined) {
-        const pct = (data.decode_rate * 100).toFixed(1);
-        titlebarLag.textContent = `decode: ${pct}%`;
-      }
-    } catch (err) { console.warn('bad rate_update event:', err); }
-  });
+es.addEventListener('rate_update', (e) => {
+  lastEventId = e.lastEventId;
+
+  try {
+    const data = JSON.parse(e.data);
+
+    if (data.decode_rate !== undefined) {
+      const rate = Number(data.decode_rate);
+
+      // 👇 Ignore junk / weak decode values
+      if (rate < 5) return;
+
+      titlebarLag.textContent = `decode: ${rate.toFixed(2)}%`;
+    }
+
+  } catch (err) {
+    console.warn('bad rate_update event:', err);
+  }
+});
+
+
 
   // ── Transcription events ──
   es.addEventListener('transcription', (e) => {
@@ -4197,7 +4376,7 @@ function renderPlayerSegments(callId) {
   if (!srcList || srcList.length < 2 || !audioEl.duration) return;
 
   const dur = audioEl.duration;
-  const colors = ['var(--cyan)', 'var(--green)', 'var(--magenta)', 'var(--yellow)', 'var(--red)', 'var(--blue)'];
+  const colors = ['var(--irc-info)', 'var(--irc-success)', 'var(--magenta)', 'var(--yellow)', 'var(--red)', 'var(--blue)'];
   const sorted = [...srcList].sort((a, b) => (a.pos || 0) - (b.pos || 0));
 
   // Track unique sources for color assignment
@@ -4570,6 +4749,14 @@ async function init() {
   serverMsg('');
 
   // Bootstrap: channels → unit nicks → affiliations → recent calls → SSE
+  initResizablePanels();
+  window.addEventListener('resize', () => {
+    if (isMobileLayout()) return;
+    const left = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--channel-tree-width')) || 240;
+    const right = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--nicklist-width')) || 164;
+    applyPanelWidth('--channel-tree-width', Math.max(180, Math.min(left, Math.floor(window.innerWidth * 0.5))));
+    applyPanelWidth('--nicklist-width', Math.max(140, Math.min(right, Math.floor(window.innerWidth * 0.4))));
+  });
   await bootstrapChannels();
   await bootstrapUnitNicks();
   await bootstrapAffiliations();
