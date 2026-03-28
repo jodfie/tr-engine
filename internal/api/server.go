@@ -114,7 +114,8 @@ func NewServer(opts ServerOptions) *Server {
 			w.Header().Set("Cache-Control", "no-store")
 
 			resp := map[string]any{
-				"token": opts.Config.AuthToken,
+				"token":        opts.Config.AuthToken,
+				"guest_access": true,
 			}
 
 			// If there's a valid JWT, include user info (backward compatible —
