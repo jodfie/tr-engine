@@ -471,6 +471,11 @@ func (p *Pipeline) enqueueTranscription(callID int64, startTime time.Time, syste
 	if p.transcriber == nil {
 		return
 	}
+	// IMBE provider requires a .dvcf file that arrives on a separate MQTT topic.
+	// Transcription for IMBE is enqueued by handleDvcf, not by other handlers.
+	if p.isIMBEProvider() {
+		return
+	}
 	// Skip if neither an audio file path nor a call filename is available —
 	// the transcription worker would fail to resolve the audio.
 	if audioFilePath == "" && meta.Filename == "" {
