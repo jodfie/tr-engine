@@ -1149,7 +1149,8 @@ const channelUnread = new Map();
 
 // Reverse lookups
 const tgidToChannel = new Map();   // `${system_id}:${tgid}` → chanName
-const unitNickCache = new Map();   // `${system_id}:${unit_id}` → alpha_tag
+const unitNickCache = new Map();   // `${system_id}:${unit_id}` → { nick, source }
+const SOURCE_PRIORITY = { manual: 4, csv: 3, mqtt: 2, event: 1, fallback: 0 };
 const systemNames = new Map();     // system_id → system_name
 const collidedNames = new Set();   // base channel names that have had collisions
 
@@ -1768,7 +1769,7 @@ function saveUnitTag(user, newTag) {
       const uk = unitKey(user.systemId, user.unitId);
       const oldNick = user.nick;
       unitNickCache.delete(uk);
-      const newNick = resolveNick(user.systemId, user.unitId, newTag);
+      const newNick = resolveNick(user.systemId, user.unitId, newTag, 'manual');
 
       for (const [chanName, ch] of channels) {
         if (ch.users.has(uk)) {
@@ -1986,16 +1987,21 @@ function resolveChannel(systemId, tgid) {
   return tgidToChannel.get(tgKey(systemId, tgid));
 }
 
-function resolveNick(systemId, unitId, alphaTag) {
+function resolveNick(systemId, unitId, alphaTag, source) {
   const key = unitKey(systemId, unitId);
+  const incoming = (source && SOURCE_PRIORITY[source] !== undefined) ? source : 'event';
   if (alphaTag && alphaTag.trim()) {
     const nick = toNick(alphaTag, unitId);
-    unitNickCache.set(key, nick);
-    return nick;
+    const cached = unitNickCache.get(key);
+    if (!cached || SOURCE_PRIORITY[incoming] >= SOURCE_PRIORITY[cached.source]) {
+      unitNickCache.set(key, { nick, source: incoming });
+      return nick;
+    }
+    return cached.nick;
   }
-  if (unitNickCache.has(key)) return unitNickCache.get(key);
+  if (unitNickCache.has(key)) return unitNickCache.get(key).nick;
   const fallback = toNick(null, unitId);
-  unitNickCache.set(key, fallback);
+  unitNickCache.set(key, { nick: fallback, source: 'fallback' });
   return fallback;
 }
 
@@ -3232,8 +3238,7 @@ async function bootstrapUnitNicks() {
     let seeded = 0;
     for (const u of units) {
       if (u.alpha_tag && u.alpha_tag.trim()) {
-        const nick = toNick(u.alpha_tag, u.unit_id);
-        unitNickCache.set(unitKey(u.system_id, u.unit_id), nick);
+        resolveNick(u.system_id, u.unit_id, u.alpha_tag, u.alpha_tag_source || 'mqtt');
         seeded++;
       }
     }
