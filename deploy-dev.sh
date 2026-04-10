@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Deploy a dev build to case without a full Docker image rebuild.
+# Deploy a dev build to gerty without a full Docker image rebuild.
 #
 # How it works:
 #   1. Cross-compiles tr-engine for linux/amd64
 #   2. Stops the container, SCPs the binary, restarts
 #   3. Pushes web files (hot-reloaded, no restart needed)
 #
-# First-time setup (already done on case):
+# First-time setup (already done on gerty):
 #   Add binary volume mount to docker-compose.yml under tr-engine service:
 #     - ./tr-engine:/usr/local/bin/tr-engine
 #
@@ -16,8 +16,8 @@
 #   ./deploy-dev.sh --binary-only # just push binary + restart
 set -euo pipefail
 
-HOST="root@case"
-REMOTE_DIR="/data/tr-engine"
+HOST="root@gerty"
+REMOTE_DIR="/docker/tr-engine"
 
 WEB=true
 BINARY=true
@@ -35,7 +35,7 @@ done
 
 if $BINARY; then
   echo "==> Cross-compiling for linux/amd64..."
-  GOOS=linux GOARCH=amd64 bash build.sh
+  CGO_ENABLED=0 GOOS=linux GOARCH=amd64 bash build.sh
 
   echo "==> Stopping tr-engine container..."
   ssh "$HOST" "cd ${REMOTE_DIR} && docker compose stop tr-engine"
