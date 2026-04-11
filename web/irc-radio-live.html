@@ -750,6 +750,7 @@ body::after {
 .unit-event-type.state-data { background: color-mix(in srgb, var(--irc-warning) 65%, var(--bg-surface)); color: #000; }
 .unit-event-type.state-signal { background: var(--irc-warning); color: #000; }
 .unit-event-type.state-off { background: var(--text-faint); color: var(--bg-surface); }
+.unit-event-type.state-call-alert { background: #cc2200; color: #fff; font-weight: 700; }
 .unit-event-tg {
   color: var(--text-muted); white-space: nowrap; overflow: hidden;
   text-overflow: ellipsis; flex: 1; min-width: 0;
@@ -1604,6 +1605,7 @@ function eventTypeStateClass(eventType) {
     case 'location': return 'state-location';
     case 'ackresp': case 'data': return 'state-data';
     case 'signal': return 'state-signal';
+    case 'call_alert': return 'state-call-alert';
     default: return 'state-affiliated';
   }
 }
@@ -4062,6 +4064,15 @@ function handleUnitEvent(evt) {
           text: `${nick} sent ${sigType} signal`,
         });
       }
+      break;
+    }
+
+    case 'call_alert': {
+      // Directed unit-to-unit page (P25 TSBK 0x1F) — no talkgroup, post to *status
+      const targetId = evt.target_unit;
+      const targetTag = evt.target_unit_alpha_tag;
+      const targetNick = targetId ? resolveNick(systemId, targetId, targetTag) : '?';
+      serverMsg(`\u{1F6A8} CALL ALERT: ${nick} \u2192 ${targetNick}`);
       break;
     }
 

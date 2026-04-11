@@ -104,6 +104,7 @@
   .type-call_start  { background: color-mix(in srgb, var(--info) 20%, transparent); color: var(--info); }
   .type-call_end    { background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); }
   .type-call_update { background: color-mix(in srgb, var(--cyan) 15%, transparent); color: var(--cyan); }
+  .type-call_alert  { background: color-mix(in srgb, #cc2200 25%, transparent); color: #ff4422; font-weight: 700; }
   .type-unit_event  { background: color-mix(in srgb, var(--magenta) 20%, transparent); color: var(--magenta); }
   .type-recorder_update { background: color-mix(in srgb, var(--warning) 15%, transparent); color: var(--warning); }
   .type-rate_update { background: var(--bg-tile); color: var(--text-muted); }
@@ -146,6 +147,7 @@
   <div class="filters">
     <label><input type="checkbox" value="call_start" checked> call_start</label>
     <label><input type="checkbox" value="call_end" checked> call_end</label>
+    <label><input type="checkbox" value="call_alert" checked> call_alert</label>
     <label><input type="checkbox" value="unit_event" checked> unit_event</label>
     <label><input type="checkbox" value="recorder_update" checked> recorder_update</label>
     <label><input type="checkbox" value="rate_update"> rate_update</label>
@@ -173,7 +175,13 @@ let everConnected = false;
 const EVENT_TYPES = ['call_start', 'call_end', 'call_update', 'unit_event', 'recorder_update', 'rate_update', 'trunking_message', 'console'];
 
 function getSelectedTypes() {
-  return Array.from(document.querySelectorAll('.filters input:checked')).map(cb => cb.value);
+  const checked = new Set(Array.from(document.querySelectorAll('.filters input:checked')).map(cb => cb.value));
+  // call_alert is a unit_event subtype — always subscribe to unit_event so we receive them,
+  // then filter client-side in addEvent based on the call_alert checkbox.
+  const ssTypes = new Set(checked);
+  if (checked.has('call_alert')) ssTypes.add('unit_event');
+  ssTypes.delete('call_alert');
+  return [...ssTypes];
 }
 
 function setStatus(state, text) {
@@ -204,6 +212,10 @@ function formatDetail(type, d) {
         ` <span class="dim">dur=</span>${d.duration ? d.duration.toFixed(1) + 's' : '?'}` +
         ` <span class="dim">freq=</span>${(d.freq / 1e6).toFixed(4)}` +
         (d.emergency ? ' <span class="emergency">EMERGENCY</span>' : '');
+    case 'call_alert':
+      return `<span class="val">${esc(d.unit_alpha_tag || 'Unit ' + d.unit_id)}</span>` +
+        ` <span class="dim">→</span>` +
+        ` <span class="val">${esc(d.target_unit_alpha_tag || 'Unit ' + d.target_unit)}</span>`;
     case 'unit_event':
       return `<span class="dim">${esc(d.event_type || '?')}</span>` +
         ` <span class="val">${esc(d.unit_alpha_tag || 'Unit ' + d.unit_id)}</span>` +
@@ -235,6 +247,17 @@ function esc(s) {
 }
 
 function addEvent(type, data) {
+  // Remap call_alert from unit_event subtype to its own display type
+  let displayType = type;
+  if (type === 'unit_event' && data.event_type === 'call_alert') {
+    displayType = 'call_alert';
+  }
+
+  // Client-side filter: check if displayType is enabled
+  const checked = new Set(Array.from(document.querySelectorAll('.filters input:checked')).map(cb => cb.value));
+  if (displayType === 'call_alert' && !checked.has('call_alert')) return;
+  if (displayType === 'unit_event' && !checked.has('unit_event')) return;
+
   totalCount++;
   eventCountEl.textContent = totalCount;
 
@@ -246,8 +269,8 @@ function addEvent(type, data) {
 
   row.innerHTML =
     `<span class="event-time">${time}</span>` +
-    `<span class="event-type type-${type}">${type.replace('_', ' ')}</span>` +
-    `<span class="event-detail">${formatDetail(type, data)}</span>`;
+    `<span class="event-type type-${displayType}">${displayType.replace(/_/g, ' ')}</span>` +
+    `<span class="event-detail">${formatDetail(displayType, data)}</span>`;
 
   eventsEl.insertBefore(row, eventsEl.firstChild);
 

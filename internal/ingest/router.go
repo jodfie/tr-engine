@@ -4,9 +4,9 @@ import "strings"
 
 // Route describes a parsed MQTT topic.
 type Route struct {
-	Handler   string // handler name: "status", "console", "systems", "system", "calls_active", "call_start", "call_end", "audio", "recorders", "recorder", "rates", "trunking_message", "unit_event" (includes signal)
+	Handler   string // handler name: "status", "console", "systems", "system", "calls_active", "call_start", "call_end", "audio", "recorders", "recorder", "rates", "trunking_message", "unit_event" (includes signal, call_alert)
 	SysName   string // set for unit event and trunking message topics
-	EventType string // set for unit events: "on", "off", "call", "end", "join", etc.
+	EventType string // set for unit events: "on", "off", "call", "end", "join", "call_alert", etc.
 }
 
 // ParseTopic maps an MQTT topic string to a Route.
@@ -36,7 +36,7 @@ type Route struct {
 //
 // Unit event topics ({unit_topic}/...):
 //
-//	.../{sys_name}/{event_type} → unit_event
+//	.../{sys_name}/{event_type} → unit_event  (on, off, call, end, join, location, ackresp, data, signal, call_alert)
 func ParseTopic(topic string) *Route {
 	parts := strings.Split(topic, "/")
 	n := len(parts)
@@ -75,7 +75,7 @@ func ParseTopic(topic string) *Route {
 
 	// Unit events: .../{sys_name}/{event_type}
 	switch last {
-	case "on", "off", "call", "end", "join", "location", "ackresp", "data", "signal":
+	case "on", "off", "call", "end", "join", "location", "ackresp", "data", "signal", "call_alert":
 		if n >= 2 {
 			return &Route{Handler: "unit_event", SysName: parts[n-2], EventType: last}
 		}
