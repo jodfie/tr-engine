@@ -428,6 +428,12 @@
       </svg>
       Export CSV
     </button>
+    <button class="btn btn-export" id="exportTRBtn" disabled>
+      <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+      </svg>
+      Export TR CSV
+    </button>
   </div>
 
   <div class="stats-strip" id="statsStrip" style="display:none">
@@ -476,6 +482,7 @@
   const uniqueIdsCheck    = $('uniqueIdsOnly');
   const systemSelect      = $('systemSelect');
   const exportBtn         = $('exportBtn');
+  const exportTRBtn       = $('exportTRBtn');
   const refreshBtn        = $('refreshBtn');
   const tableContainer    = $('tableContainer');
   const statsStrip        = $('statsStrip');
@@ -639,10 +646,12 @@
         <span>No talkgroups match your filter.</span>`;
       tableContainer.appendChild(panel);
       exportBtn.disabled = true;
+      exportTRBtn.disabled = true;
       return;
     }
 
     exportBtn.disabled = false;
+    exportTRBtn.disabled = false;
 
     const slice = filtered.slice(0, displayCount);
     const hasMore = filtered.length > displayCount;
@@ -761,6 +770,45 @@
     showToast(`Exported ${filtered.length.toLocaleString()} talkgroups`);
   }
 
+  // TR-compatible export: Decimal,Hex,Alpha Tag,Mode,Description,Tag,Group
+  // Matches the format expected by trunk-recorder and tr-engine's CSV import.
+  function exportTRCSV() {
+    const rows = [['Decimal', 'Hex', 'Alpha Tag', 'Mode', 'Description', 'Tag', 'Group']];
+    filtered.forEach(tg => {
+      const tgid = tg.tgid ?? 0;
+      rows.push([
+        tgid,
+        tgid.toString(16).toUpperCase().padStart(4, '0'),
+        getTag(tg),
+        tg.mode        || '',
+        tg.description || '',
+        tg.tag         || '',
+        tg.group       || '',
+      ]);
+    });
+
+    const csv = rows.map(r =>
+      r.map(v => {
+        const s = String(v);
+        return s.includes(',') || s.includes('"') || s.includes('\n')
+          ? `"${s.replace(/"/g, '""')}"`
+          : s;
+      }).join(',')
+    ).join('\r\n');
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `talkgroup-tags-tr-${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    showToast(`Exported ${filtered.length.toLocaleString()} talkgroups (TR format)`);
+  }
+
   function setLoading(on) {
     if (on) {
       progressWrap.classList.remove('hidden');
@@ -771,6 +819,7 @@
       panel.innerHTML = '<div class="spinner"></div><span>Fetching talkgroups…</span>';
       tableContainer.appendChild(panel);
       exportBtn.disabled = true;
+      exportTRBtn.disabled = true;
       refreshBtn.disabled = true;
     } else {
       progressWrap.classList.add('hidden');
@@ -827,6 +876,7 @@
   }
 
   exportBtn.addEventListener('click', exportCSV);
+  exportTRBtn.addEventListener('click', exportTRCSV);
   refreshBtn.addEventListener('click', fetchAllTalkgroups);
 
   let searchTimer;

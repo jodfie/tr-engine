@@ -437,6 +437,12 @@
       </svg>
       Export CSV
     </button>
+    <button class="btn btn-export" id="exportTRBtn" disabled>
+      <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+      </svg>
+      Export TR CSV
+    </button>
   </div>
 
   <!-- Stats -->
@@ -491,6 +497,7 @@
   const uniqueIdsCheck    = $('uniqueIdsOnly');
   const systemSelect      = $('systemSelect');
   const exportBtn         = $('exportBtn');
+  const exportTRBtn       = $('exportTRBtn');
   const refreshBtn        = $('refreshBtn');
   const tableContainer    = $('tableContainer');
   const statePanel        = $('statePanel');
@@ -651,10 +658,12 @@
         <span>No units match your filter.</span>`;
       tableContainer.appendChild(panel);
       exportBtn.disabled = true;
+      exportTRBtn.disabled = true;
       return;
     }
 
     exportBtn.disabled = false;
+    exportTRBtn.disabled = false;
 
     const slice = filtered.slice(0, displayCount);
     const hasMore = filtered.length > displayCount;
@@ -771,6 +780,35 @@
     showToast(`Exported ${filtered.length.toLocaleString()} units`);
   }
 
+  // TR-compatible export: headerless two-column format (unit_id,alpha_tag)
+  // Matches the format expected by trunk-recorder's unitTagsFile CSV.
+  function exportTRCSV() {
+    const rows = filtered.map(u => [
+      u.unit_id,
+      (u.alpha_tag || '').trim(),
+    ]);
+
+    const csv = rows.map(r =>
+      r.map(v => {
+        const s = String(v);
+        return s.includes(',') || s.includes('"') || s.includes('\n')
+          ? `"${s.replace(/"/g, '""')}"` : s;
+      }).join(',')
+    ).join('\r\n');
+
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `unit-tags-tr-${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    showToast(`Exported ${filtered.length.toLocaleString()} units (TR format)`);
+  }
+
   // ── Helpers ───────────────────────────────────────────────
   function setLoading(on) {
     if (on) {
@@ -782,6 +820,7 @@
       panel.innerHTML = '<div class="spinner"></div><span>Fetching units…</span>';
       tableContainer.appendChild(panel);
       exportBtn.disabled = true;
+      exportTRBtn.disabled = true;
       refreshBtn.disabled = true;
     } else {
       progressWrap.classList.add('hidden');
@@ -839,6 +878,7 @@
 
   // ── Events ────────────────────────────────────────────────
   exportBtn.addEventListener('click', exportCSV);
+  exportTRBtn.addEventListener('click', exportTRCSV);
   refreshBtn.addEventListener('click', fetchAllUnits);
 
   let searchTimer;
