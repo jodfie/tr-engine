@@ -36,6 +36,7 @@ func TestParseTopic(t *testing.T) {
 		{name: "unit_join", topic: "trengine/units/butco/join", want: &Route{Handler: "unit_event", SysName: "butco"}},
 		{name: "unit_ackresp", topic: "trengine/units/butco/ackresp", want: &Route{Handler: "unit_event", SysName: "butco"}},
 		{name: "unit_data", topic: "trengine/units/butco/data", want: &Route{Handler: "unit_event", SysName: "butco"}},
+		{name: "unit_call_alert", topic: "tr/units/pscsite4/call_alert", want: &Route{Handler: "unit_event", SysName: "pscsite4", EventType: "call_alert"}},
 
 		// Custom prefixes — router only cares about trailing segments
 		{name: "custom_prefix_feed", topic: "myradio/whatever/call_start", want: &Route{Handler: "call_start"}},

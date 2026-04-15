@@ -170,6 +170,9 @@ type UnitEventData struct {
 	// Signal-specific fields (from signal events)
 	SignalingType string `json:"signaling_type,omitempty"`
 	SignalType    string `json:"signal_type,omitempty"`
+	// Call-alert-specific fields (from call_alert events)
+	TargetUnit         int    `json:"target_unit,omitempty"`
+	TargetUnitAlphaTag string `json:"target_unit_alpha_tag,omitempty"`
 }
 
 // UnitEventMsg wraps a unit event message. The event data is keyed by the event type.

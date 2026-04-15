@@ -3700,7 +3700,7 @@ components:
 
     EventType:
       type: string
-      enum: [on, off, join, call, end, data, ans_req, location, ackresp, signal]
+      enum: [on, off, join, call, end, data, ans_req, location, ackresp, signal, call_alert]
       description: |
         Unit event types from trunk-recorder MQTT:
         - **on**: unit registration (radio powered on / entering system)
@@ -3713,6 +3713,7 @@ components:
         - **location**: unit location update
         - **ackresp**: acknowledge response
         - **signal**: in-band signaling decode (MDC1200, FleetSync, STAR)
+        - **call_alert**: directed unit-to-unit page (P25 TSBK 0x1F); `target_unit` and `target_unit_alpha_tag` present in SSE payload and `metadata_json`
 
     CallState:
       type: string
@@ -4434,6 +4435,20 @@ components:
             `radio_check`, `radio_stun`, `radio_revive`, and their `_ack`/`_pre` variants.
             Only present in SSE payloads for `unit_event:signal` events.
           example: normal
+
+        # Call-alert-specific fields (present only for event_type=call_alert, via SSE)
+        target_unit:
+          type: integer
+          description: |
+            Unit ID of the radio being paged (P25 Call Alert, TSBK 0x1F).
+            Only present in SSE payloads for `unit_event:call_alert` events.
+          example: 4811289
+        target_unit_alpha_tag:
+          type: string
+          description: |
+            Alpha tag for the paged unit, if known.
+            Only present in SSE payloads for `unit_event:call_alert` events.
+          example: "OFFICER JONES"
 
     CallFrequency:
       type: object

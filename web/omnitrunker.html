@@ -259,6 +259,7 @@
   .badge-location { background: color-mix(in srgb, var(--cyan) 20%, transparent); color: var(--cyan); }
   .badge-call-end { background: var(--bg-tile); color: var(--text-faint); }
   .badge-signal { background: color-mix(in srgb, var(--magenta) 15%, transparent); color: var(--magenta); }
+  .badge-call-alert { background: color-mix(in srgb, #cc2200 25%, transparent); color: #ff4422; font-weight: 700; }
 
   .encrypted-badge {
     display: inline-block;
@@ -1150,6 +1151,7 @@ const typeFilterDropdown = new MultiSelectDropdown(
       ['location', 'Location'],
       ['call-end', 'Call End'],
       ['signal', 'Signal'],
+      ['call-alert', 'Call Alert'],
     ],
     onChange: onTypeFilterChange,
   }
@@ -1251,6 +1253,8 @@ function getBadgeInfo(eventType) {
       return { cls: 'badge-call-end', label: 'CALL END' };
     case 'signal':
       return { cls: 'badge-signal', label: 'SIGNAL' };
+    case 'call_alert':
+      return { cls: 'badge-call-alert', label: 'CALL ALERT' };
     default:
       return { cls: 'badge-data', label: String(eventType || '?').toUpperCase() };
   }
@@ -1268,6 +1272,7 @@ function getFilterKey(eventType) {
     case 'location': return 'location';
     case 'end': case 'call_end': case 'call-end': return 'call-end';
     case 'signal': return 'signal';
+    case 'call_alert': return 'call-alert';
     default: return eventType;
   }
 }
@@ -1751,14 +1756,18 @@ function buildActivityRow(eventType, data) {
   c5.appendChild(badgeSpan);
   row.appendChild(c5);
 
-  // TG
+  // TG (for call_alert: show target unit instead)
   const c6 = document.createElement('td');
-  c6.textContent = tgid != null ? String(tgid) : '';
+  c6.textContent = eventType === 'call_alert'
+    ? (data.target_unit != null ? '→ ' + String(data.target_unit) : '')
+    : (tgid != null ? String(tgid) : '');
   row.appendChild(c6);
 
-  // TG Alpha
+  // TG Alpha (for call_alert: show target unit alpha tag)
   const c7 = document.createElement('td');
-  c7.textContent = tgAlpha;
+  c7.textContent = eventType === 'call_alert'
+    ? (data.target_unit_alpha_tag || '')
+    : tgAlpha;
   row.appendChild(c7);
 
   return row;

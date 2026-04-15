@@ -166,6 +166,26 @@ func (p *Pipeline) handleUnitEvent(eventType string, payload []byte) error {
 			}
 		}
 
+		// Call-alert events: upsert target unit and store target_unit in metadata_json
+		effectiveTargetUnitTag := data.TargetUnitAlphaTag
+		if eventType == "call_alert" && data.TargetUnit > 0 {
+			if dbTag, err := p.db.UpsertUnit(ctx, identity.SystemID, data.TargetUnit,
+				data.TargetUnitAlphaTag, "call_alert_target", ts, 0,
+			); err != nil {
+				p.log.Warn().Err(err).Int("target_unit", data.TargetUnit).Msg("failed to upsert target unit")
+			} else if dbTag != "" {
+				effectiveTargetUnitTag = dbTag
+			}
+
+			meta := map[string]any{
+				"target_unit":           data.TargetUnit,
+				"target_unit_alpha_tag": effectiveTargetUnitTag,
+			}
+			if b, err := json.Marshal(meta); err == nil {
+				row.MetadataJSON = b
+			}
+		}
+
 		if err := p.db.InsertUnitEvent(ctx, row); err != nil {
 			return fmt.Errorf("insert unit event: %w", err)
 		}
@@ -183,6 +203,10 @@ func (p *Pipeline) handleUnitEvent(eventType string, payload []byte) error {
 		if eventType == "signal" {
 			ssePayload["signaling_type"] = data.SignalingType
 			ssePayload["signal_type"] = data.SignalType
+		}
+		if eventType == "call_alert" {
+			ssePayload["target_unit"] = data.TargetUnit
+			ssePayload["target_unit_alpha_tag"] = effectiveTargetUnitTag
 		}
 
 		p.PublishEvent(EventData{
