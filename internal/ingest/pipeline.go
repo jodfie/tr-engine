@@ -974,10 +974,11 @@ func (p *Pipeline) refreshTalkgroupStatsCold(log zerolog.Logger) {
 // No time bucket — the dedup window is controlled by the 10-second cleanup loop.
 // This avoids boundary artifacts where events 1-2s apart straddle a fixed bucket edge.
 type unitDedupKey struct {
-	SystemID  int
-	UnitID    int
-	EventType string
-	Tgid      int
+	SystemID   int
+	UnitID     int
+	EventType  string
+	Tgid       int
+	TargetUnit int // populated for call_alert events; zero for all other event types
 }
 
 // dedupCleanupLoop sweeps expired entries from the unit event dedup buffer every 10 seconds.

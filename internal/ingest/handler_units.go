@@ -83,10 +83,11 @@ func (p *Pipeline) handleUnitEvent(eventType string, payload []byte) error {
 	isDup := false
 	{
 		dk := unitDedupKey{
-			SystemID:  identity.SystemID,
-			UnitID:    data.Unit,
-			EventType: eventType,
-			Tgid:      data.Talkgroup,
+			SystemID:   identity.SystemID,
+			UnitID:     data.Unit,
+			EventType:  eventType,
+			Tgid:       data.Talkgroup,
+			TargetUnit: data.TargetUnit,
 		}
 		if _, loaded := p.unitEventDedup.LoadOrStore(dk, time.Now()); loaded {
 			isDup = true
