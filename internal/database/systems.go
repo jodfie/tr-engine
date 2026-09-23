@@ -157,6 +157,12 @@ func (db *DB) MergeSystems(ctx context.Context, sourceID, targetID int, performe
 	}
 	defer tx.Rollback(ctx)
 
+	// Serialize with the unit tag suggestion scanner's writes and with
+	// approve/dismiss (see unitTagMergeLockKey). Taken first, before any row lock.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, unitTagMergeLockKey); err != nil {
+		return 0, 0, 0, 0, 0, 0, fmt.Errorf("lock against unit tag scanner: %w", err)
+	}
+
 	// Move calls
 	tag, err := tx.Exec(ctx, `UPDATE calls SET system_id = $1 WHERE system_id = $2`, targetID, sourceID)
 	if err != nil {
@@ -316,6 +322,101 @@ func (db *DB) MergeSystems(ctx context.Context, sourceID, targetID int, performe
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM units WHERE system_id = $1`, sourceID); err != nil {
 		return 0, 0, 0, 0, 0, 0, fmt.Errorf("delete source units: %w", err)
+	}
+
+	// Move unit tag suggestions. Evidence records each call's call group so
+	// another site's recording of the same transmission is not counted
+	// twice; point the source's evidence at the groups its calls now belong
+	// to (the conflicting source groups were folded into target groups above).
+	if len(cgConflicts) > 0 {
+		srcGroups := make([]int64, len(cgConflicts))
+		dstGroups := make([]int64, len(cgConflicts))
+		for i, c := range cgConflicts {
+			srcGroups[i], dstGroups[i] = int64(c.src), int64(c.dst)
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE unit_tag_suggestions s SET evidence = (
+				SELECT COALESCE(jsonb_agg(
+					CASE WHEN m.dst IS NULL THEN e.item
+					     ELSE jsonb_set(e.item, '{call_group_id}', to_jsonb(m.dst)) END
+					ORDER BY e.ord), '[]'::jsonb)
+				FROM jsonb_array_elements(s.evidence) WITH ORDINALITY AS e(item, ord)
+				LEFT JOIN unnest($2::bigint[], $3::bigint[]) AS m(src, dst)
+				  ON m.src = (e.item ->> 'call_group_id')::bigint
+			)
+			WHERE s.system_id = $1
+			  AND EXISTS (
+				SELECT 1 FROM jsonb_array_elements(s.evidence) AS e(item)
+				JOIN unnest($2::bigint[]) AS m(src) ON m.src = (e.item ->> 'call_group_id')::bigint)
+		`, sourceID, srcGroups, dstGroups); err != nil {
+			return 0, 0, 0, 0, 0, 0, fmt.Errorf("remap unit tag suggestion call groups: %w", err)
+		}
+	}
+
+	// Where the target already has the same (unit, tag) candidate, fold the
+	// source into it. Source evidence for a call or call group the target
+	// already holds is the same transmission (both systems recorded it, which
+	// is usually why they are being merged): it is dropped and not counted
+	// again. Like the scanner's own de-duplication this only sees the capped
+	// evidence lists, and occurrences assume one mention per duplicate call.
+	// Evidence is kept newest first, capped at 10; the target's decision is
+	// kept (adopting the source's if the target is still pending), and the
+	// current-tag flag comes from whichever row was seen last.
+	if _, err := tx.Exec(ctx, `
+		UPDATE unit_tag_suggestions t SET
+			occurrences = GREATEST(t.occurrences + f.occurrences - f.dups, t.call_count + f.call_count - f.dups),
+			call_count  = t.call_count + f.call_count - f.dups,
+			matches_current_tag = CASE WHEN f.last_seen > t.last_seen THEN f.matches_current_tag ELSE t.matches_current_tag END,
+			tag_at_sighting     = CASE WHEN f.last_seen > t.last_seen THEN f.tag_at_sighting ELSE t.tag_at_sighting END,
+			first_seen  = LEAST(t.first_seen, f.first_seen),
+			last_seen   = GREATEST(t.last_seen, f.last_seen),
+			evidence    = (
+				SELECT COALESCE(jsonb_agg(e.item ORDER BY e.at DESC, e.ord), '[]'::jsonb)
+				FROM (
+					SELECT item, ord, (item ->> 'call_start_time')::timestamptz AS at
+					FROM jsonb_array_elements(t.evidence || f.fresh) WITH ORDINALITY AS x(item, ord)
+					ORDER BY at DESC, ord LIMIT 10
+				) e
+			),
+			status      = CASE WHEN t.status = 'pending' THEN f.status ELSE t.status END,
+			applied_tag = CASE WHEN t.status = 'pending' THEN f.applied_tag ELSE t.applied_tag END,
+			previous_tag = CASE WHEN t.status = 'pending' THEN f.previous_tag ELSE t.previous_tag END,
+			previous_tag_source = CASE WHEN t.status = 'pending' THEN f.previous_tag_source ELSE t.previous_tag_source END,
+			decided_at  = CASE WHEN t.status = 'pending' THEN f.decided_at ELSE t.decided_at END,
+			decided_by  = CASE WHEN t.status = 'pending' THEN f.decided_by ELSE t.decided_by END
+		FROM (
+			SELECT s.*, tt.id AS target_id, d.dups, d.fresh
+			FROM unit_tag_suggestions s
+			JOIN unit_tag_suggestions tt
+			  ON tt.system_id = $1 AND tt.unit_id = s.unit_id AND tt.tag_key = s.tag_key
+			CROSS JOIN LATERAL (
+				SELECT count(*) FILTER (WHERE x.dup) AS dups,
+					COALESCE(jsonb_agg(x.item ORDER BY x.ord) FILTER (WHERE NOT x.dup), '[]'::jsonb) AS fresh
+				FROM (
+					SELECT e.item, e.ord,
+						tt.evidence @> jsonb_build_array(jsonb_build_object('call_id', e.item -> 'call_id'))
+						OR (e.item -> 'call_group_id' IS NOT NULL
+						    AND tt.evidence @> jsonb_build_array(jsonb_build_object('call_group_id', e.item -> 'call_group_id')))
+						AS dup
+					FROM jsonb_array_elements(s.evidence) WITH ORDINALITY AS e(item, ord)
+				) x
+			) d
+			WHERE s.system_id = $2
+		) f
+		WHERE t.id = f.target_id
+	`, targetID, sourceID); err != nil {
+		return 0, 0, 0, 0, 0, 0, fmt.Errorf("merge unit tag suggestions: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM unit_tag_suggestions s
+		USING unit_tag_suggestions t
+		WHERE s.system_id = $2 AND t.system_id = $1
+		  AND t.unit_id = s.unit_id AND t.tag_key = s.tag_key
+	`, targetID, sourceID); err != nil {
+		return 0, 0, 0, 0, 0, 0, fmt.Errorf("delete merged unit tag suggestions: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE unit_tag_suggestions SET system_id = $1 WHERE system_id = $2`, targetID, sourceID); err != nil {
+		return 0, 0, 0, 0, 0, 0, fmt.Errorf("move unit tag suggestions: %w", err)
 	}
 
 	// Move unit_events

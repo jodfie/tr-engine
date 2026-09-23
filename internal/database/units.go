@@ -199,6 +199,12 @@ func (db *DB) FindUnitSystems(ctx context.Context, unitID int) ([]AmbiguousMatch
 // re-import will overwrite the edit (same rule as UpdateTalkgroupFields). An
 // empty alpha_tag leaves the tag and its source unchanged.
 func (db *DB) UpdateUnitFields(ctx context.Context, systemID, unitID int, alphaTag, alphaTagSource *string) error {
+	return updateUnitFields(ctx, db.Q, systemID, unitID, alphaTag, alphaTagSource)
+}
+
+// updateUnitFields is the shared write path for unit edits (PATCH /units/{id}
+// and unit tag suggestion approval). q may be bound to a transaction.
+func updateUnitFields(ctx context.Context, q *sqlcdb.Queries, systemID, unitID int, alphaTag, alphaTagSource *string) error {
 	atVal := ""
 	if alphaTag != nil {
 		atVal = *alphaTag
@@ -208,7 +214,7 @@ func (db *DB) UpdateUnitFields(ctx context.Context, systemID, unitID int, alphaT
 		srcVal = *alphaTagSource
 	}
 	srcVal = effectiveUnitPatchSource(srcVal, alphaTag)
-	return db.Q.UpdateUnitFields(ctx, sqlcdb.UpdateUnitFieldsParams{
+	return q.UpdateUnitFields(ctx, sqlcdb.UpdateUnitFieldsParams{
 		AlphaTag:       atVal,
 		AlphaTagSource: srcVal,
 		SystemID:       systemID,

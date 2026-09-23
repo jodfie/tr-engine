@@ -683,6 +683,58 @@ CREATE TABLE data_fixups (
 );
 
 -- ============================================================
+-- 22. unit_tag_suggestions (review queue, permanent, low volume)
+--     Candidate unit alpha tags extracted from transcriptions where a
+--     unit identifies itself ("County, Medic 12 on scene"). Never
+--     modifies units — only an explicit approve via the API writes
+--     units.alpha_tag. One row per (system, unit, normalized tag);
+--     repeat sightings accumulate counts and capped evidence, and a
+--     dismissed row stays dismissed while it keeps counting.
+-- ============================================================
+
+CREATE TABLE unit_tag_suggestions (
+    id                   bigserial    PRIMARY KEY,
+    system_id            int          NOT NULL REFERENCES systems (system_id),
+    unit_id              int          NOT NULL,
+    tag_key              text         NOT NULL,   -- normalized: 'MEDIC 12', 'P338'
+    proposed_tag         text         NOT NULL,   -- display form: 'Medic 12'
+    status               text         NOT NULL DEFAULT 'pending'
+                                      CHECK (status IN ('pending', 'approved', 'dismissed')),
+    occurrences          int          NOT NULL DEFAULT 0,   -- total self-identifications
+    call_count           int          NOT NULL DEFAULT 0,   -- distinct calls
+    matches_current_tag  boolean      NOT NULL DEFAULT false, -- vs unit tag at last sighting
+    tag_at_sighting      text,        -- units.alpha_tag matches_current_tag was computed against
+    first_seen           timestamptz  NOT NULL,   -- call start time of first sighting
+    last_seen            timestamptz  NOT NULL,
+    evidence             jsonb        NOT NULL DEFAULT '[]'::jsonb,  -- newest first, capped
+    -- Decision provenance (set by approve/dismiss)
+    applied_tag          text,        -- tag written to units.alpha_tag (approve only)
+    previous_tag         text,        -- units.alpha_tag before approval
+    previous_tag_source  text,        -- units.alpha_tag_source before approval
+    decided_at           timestamptz,
+    decided_by           text,        -- username / API key label, if authenticated
+    created_at           timestamptz  NOT NULL DEFAULT now(),
+    updated_at           timestamptz  NOT NULL DEFAULT now(),
+
+    UNIQUE (system_id, unit_id, tag_key)
+);
+
+CREATE TRIGGER trg_unit_tag_suggestions_updated_at
+    BEFORE UPDATE ON unit_tag_suggestions
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+-- ============================================================
+-- 23. scan_cursors (resumable background scanner positions)
+--     last_id = highest source row id already processed.
+-- ============================================================
+
+CREATE TABLE scan_cursors (
+    name        text         PRIMARY KEY,
+    last_id     bigint       NOT NULL DEFAULT 0,
+    updated_at  timestamptz  NOT NULL DEFAULT now()
+);
+
+-- ============================================================
 -- Helper: create_monthly_partition()
 --
 -- Creates a monthly partition for a given table if it doesn't

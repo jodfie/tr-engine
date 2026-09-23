@@ -50,6 +50,11 @@ func TestSanitizeConfig(t *testing.T) {
 
 		RetentionRawMessages: 168 * time.Hour,
 
+		UnitTagSuggestions:         true,
+		UnitTagSuggestionsMinCalls: 3,
+		UnitTagSuggestionsMinShare: 0.2,
+		UnitTagSuggestionsInterval: time.Minute,
+
 		S3: config.S3Config{
 			Bucket:    "my-audio-bucket",
 			Endpoint:  "https://s3user:s3pass@s3.example.com",
@@ -158,6 +163,13 @@ func TestSanitizeConfig(t *testing.T) {
 	}
 	if got := result["ReadTimeout"]; got != "5s" {
 		t.Errorf("ReadTimeout: got %q, want %q", got, "5s")
+	}
+
+	// Unit tag suggestion scanner settings
+	if result["UnitTagSuggestions"] != true || result["UnitTagSuggestionsMinCalls"] != 3 ||
+		result["UnitTagSuggestionsMinShare"] != 0.2 || result["UnitTagSuggestionsInterval"] != "1m0s" {
+		t.Errorf("unit tag suggestion settings: got %v / %v / %v / %v", result["UnitTagSuggestions"],
+			result["UnitTagSuggestionsMinCalls"], result["UnitTagSuggestionsMinShare"], result["UnitTagSuggestionsInterval"])
 	}
 }
 

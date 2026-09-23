@@ -200,6 +200,8 @@ func NewServer(opts ServerOptions) *Server {
 			NewSystemsHandler(opts.DB).Routes(r)
 			NewTalkgroupsHandler(opts.DB, opts.TGCSVPaths).Routes(r)
 			NewUnitsHandler(opts.DB, opts.UnitCSVPaths).Routes(r)
+			NewUnitTagSuggestionsHandler(opts.DB, opts.UnitCSVPaths, opts.Config.UnitTagSuggestions,
+				opts.Config.UnitTagSuggestionsMinCalls, opts.Config.UnitTagSuggestionsMinShare).Routes(r)
 			NewCallsHandler(opts.DB, opts.Config.AudioDir, opts.Config.TRAudioDir, opts.Store, opts.Live).Routes(r)
 			NewCallGroupsHandler(opts.DB, opts.Config.TRAudioDir).Routes(r)
 			NewStatsHandler(opts.DB).Routes(r)

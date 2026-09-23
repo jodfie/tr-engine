@@ -215,6 +215,8 @@ Pluggable speech-to-text with four providers:
 
 Features: configurable worker pool, queue size, duration filters, anti-hallucination parameters, `provider_ms` performance tracking, talkgroup include/exclude filtering.
 
+**Unit tag suggestions** (opt-in, `UNIT_TAG_SUGGESTIONS=true`): a background scanner finds units identifying themselves in their own transmissions ("County, Medic 12 on scene") and queues candidate alpha tags in a review queue (`GET /unit-tag-suggestions`) with the transcript excerpt and call audio. Nothing changes a unit until a reviewer approves (optionally editing) a suggestion; dismissed candidates stay dismissed. Only unit designators are extracted ("Medic 12", "P338", "1 Paul 31"), not personal names; a transmission recorded by several sites counts once. See `sample.env` for the review thresholds.
+
 ## API
 
 80+ endpoints under `/api/v1`. See `openapi.yaml` for the full specification, or open the built-in Swagger UI at `/docs.html`.
@@ -235,6 +237,7 @@ Features: configurable worker pool, queue size, duration filters, anti-hallucina
 | `GET /transcriptions/search` | Full-text search across transcriptions |
 | `GET /unit-events` | Unit event queries |
 | `GET /unit-affiliations` | Live talkgroup affiliation state |
+| `GET /unit-tag-suggestions` | Unit alpha tag review queue (approve/dismiss via POST) |
 | `GET /call-groups` | Deduplicated call groups across sites |
 | `GET /recorders` | Recorder hardware state |
 | `GET /events/stream` | Real-time SSE event stream |
