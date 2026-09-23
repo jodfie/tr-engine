@@ -139,6 +139,16 @@ ALTER TABLE systems ADD CONSTRAINT systems_system_type_check
 		CREATE INDEX IF NOT EXISTS idx_api_keys_key_hash ON api_keys(key_hash)`,
 		check: `SELECT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'api_keys')`,
 	},
+	{
+		name: "create data_fixups table",
+		sql: `CREATE TABLE IF NOT EXISTS data_fixups (
+			name       text        PRIMARY KEY,
+			applied_at timestamptz NOT NULL DEFAULT now(),
+			detail     jsonb
+		);
+		ALTER TABLE data_fixups ADD COLUMN IF NOT EXISTS detail jsonb`,
+		check: `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'data_fixups' AND column_name = 'detail')`,
+	},
 }
 
 // Migrate runs all pending schema migrations.

@@ -21,6 +21,13 @@ type DiscoveredSystem struct {
 	CSVPath    string // host path to the talkgroup CSV file (empty if none)
 	Units      []UnitEntry
 	UnitCSVPath string // host path to the unit tags CSV file (empty if none)
+	// Versions of the CSV files that were read (stamped just before reading),
+	// for FileWatch.
+	CSVStamp, UnitCSVStamp FileStamp
+	// Errors loading the configured talkgroup and unit tags CSVs (nil when the
+	// file isn't configured or loaded). Such a file is neither imported nor
+	// watched until the next start.
+	CSVErr, UnitCSVErr error
 }
 
 // Discover reads trunk-recorder's config.json and optionally docker-compose.yaml
@@ -77,8 +84,10 @@ func Discover(trDir string, log zerolog.Logger) (*DiscoveryResult, error) {
 
 		if sys.TalkgroupsFile != "" {
 			tgPath := vm.Translate(sys.TalkgroupsFile)
+			tgStamp, _ := StatFile(tgPath)
 			result, tgErr := LoadTalkgroupCSV(tgPath)
 			if tgErr != nil {
+				ds.CSVErr = tgErr
 				log.Warn().Err(tgErr).
 					Str("system", sys.ShortName).
 					Str("path", tgPath).
@@ -86,6 +95,7 @@ func Discover(trDir string, log zerolog.Logger) (*DiscoveryResult, error) {
 			} else {
 				ds.Talkgroups = result.Entries
 				ds.CSVPath = tgPath
+				ds.CSVStamp = tgStamp
 				ev := log.Info().
 					Str("system", sys.ShortName).
 					Int("talkgroups", len(result.Entries)).
@@ -117,20 +127,37 @@ func Discover(trDir string, log zerolog.Logger) (*DiscoveryResult, error) {
 
 		if sys.UnitTagsFile != "" {
 			unitPath := vm.Translate(sys.UnitTagsFile)
-			units, unitErr := LoadUnitCSV(unitPath)
+			unitStamp, _ := StatFile(unitPath)
+			unitResult, unitErr := LoadUnitCSV(unitPath)
 			if unitErr != nil {
+				ds.UnitCSVErr = unitErr
 				log.Warn().Err(unitErr).
 					Str("system", sys.ShortName).
 					Str("path", unitPath).
 					Msg("failed to load unit tags CSV")
 			} else {
-				ds.Units = units
+				ds.Units = unitResult.Entries
 				ds.UnitCSVPath = unitPath
+				ds.UnitCSVStamp = unitStamp
 				log.Info().
 					Str("system", sys.ShortName).
-					Int("units", len(units)).
+					Int("units", len(unitResult.Entries)).
 					Str("path", unitPath).
 					Msg("loaded unit tags CSV")
+				if unitResult.Skipped > 0 {
+					log.Warn().
+						Str("system", sys.ShortName).
+						Int("skipped", unitResult.Skipped).
+						Str("path", unitPath).
+						Msg("unit tags CSV rows skipped (malformed, invalid unit ID, or empty tag)")
+				}
+				if unitResult.Duplicates > 0 {
+					log.Warn().
+						Str("system", sys.ShortName).
+						Int("duplicates", unitResult.Duplicates).
+						Str("path", unitPath).
+						Msg("unit tags CSV contains duplicate unit IDs (last entry wins)")
+				}
 			}
 		}
 

@@ -918,9 +918,16 @@ paths:
       summary: Update talkgroup metadata
       description: >-
         Updates mutable talkgroup fields (alpha_tag, description, group,
-        tag, priority). Only provided fields are changed.
+        tag, priority). Only provided fields are changed; empty strings and a
+        negative priority are ignored (they don't clear anything). Changing any
+        of them marks the talkgroup `alpha_tag_source: manual` (any
+        alpha_tag_source in the same request is ignored), so neither MQTT ingest
+        nor a talkgroup CSV re-import will overwrite it. An unknown
+        alpha_tag_source value is rejected with 400.
         When CSV_WRITEBACK is enabled and TR_DIR is configured with a talkgroupsFile,
-        alpha_tag changes are also written back to trunk-recorder's talkgroup CSV file on disk.
+        alpha_tag changes are also written back to trunk-recorder's talkgroup CSV file on disk
+        and, when that succeeds, to the talkgroup directory entry. Otherwise the talkgroup
+        directory (the imported CSV) is not changed by edits.
       tags: [talkgroups]
       parameters:
         - $ref: "#/components/parameters/talkgroupId"
@@ -1105,9 +1112,22 @@ paths:
       summary: Upload talkgroup CSV
       description: |
         Imports a trunk-recorder talkgroup CSV file into the talkgroup directory.
-        Accepts either `system_id` (must exist) or `system_name` (creates the
-        system if it doesn't exist). CSV format: Decimal, Hex, Alpha Tag, Mode,
-        Description, Tag, Category (header-aware, column order doesn't matter).
+        Accepts either `system_id` (must exist) or `system_name` (see the
+        parameter). CSV format: Decimal, Hex, Alpha Tag, Mode,
+        Description, Tag, Category (header-aware, column order doesn't matter;
+        a UTF-8 BOM is ignored).
+
+        The directory is then applied to heard talkgroups using the tag priority
+        manual > csv > mqtt: a non-empty CSV alpha tag replaces an MQTT-discovered
+        tag (and a previously imported CSV tag, so re-importing an edited CSV takes
+        effect) and marks the talkgroup `alpha_tag_source: csv`, after which MQTT
+        ingest no longer changes its alpha_tag/tag/group/description. For those
+        talkgroups non-empty CSV Tag/Category/Description/Mode/Priority values
+        also replace the current ones. Manually edited talkgroups are never
+        overwritten; the CSV only fills their empty fields. Talkgroups first heard
+        after the import pick up the CSV values on their first call or unit event.
+        CSV modes other than D, A, E, M, T (e.g. `DE`, `TE`) are kept in the
+        directory but not copied to the talkgroup.
       tags: [talkgroups]
       parameters:
         - name: system_id
@@ -1117,7 +1137,14 @@ paths:
             type: integer
         - name: system_name
           in: query
-          description: Target system name (created if it doesn't exist). Mutually exclusive with system_id.
+          description: >-
+            Target system name. Mutually exclusive with system_id. Selects the
+            non-deleted system whose name, or one of whose sites' short name (TR's
+            shortName), equals it exactly. The system must already exist: systems are
+            created when trunk-recorder first reports them (MQTT, upload, file watch
+            or TR_DIR), so an unknown name fails with 404 and nothing is created.
+            If several systems match, the request fails with 409 and lists them;
+            use system_id instead.
           schema:
             type: string
       requestBody:
@@ -1149,18 +1176,118 @@ paths:
                   system_id:
                     type: integer
                     description: System ID the talkgroups were imported into
+                  enriched:
+                    type: integer
+                    description: Heard talkgroups changed by applying the directory (omitted when 0)
+                  skipped:
+                    type: integer
+                    description: Malformed rows or rows with a missing/invalid Decimal tgid (omitted when 0)
+                  duplicates:
+                    type: integer
+                    description: Rows repeating a tgid seen earlier in the file; the last one wins (omitted when 0)
         "400":
           $ref: "#/components/responses/BadRequest"
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Ambiguous"
         "500":
           $ref: "#/components/responses/InternalError"
 
   # ----------------------------------------------------------
   # Units
   # ----------------------------------------------------------
+  /unit-tags/import:
+    post:
+      operationId: importUnitTags
+      summary: Upload unit tags CSV
+      description: |
+        Imports a trunk-recorder unit tags CSV (the `unitTagsFile` format) into
+        the units table, for deployments where tr-engine can't read trunk-recorder's
+        files via `TR_DIR`. Accepts either `system_id` (must exist) or
+        `system_name` (see the parameter).
+
+        CSV format: two columns, `unit_id,alpha_tag`, no header required. A header
+        row (first row whose first column is not numeric), a UTF-8 BOM, blank
+        lines, quoted fields and extra columns are all accepted. Rows that can't be
+        parsed, have a non-numeric or out-of-range unit ID (not 1..2147483647), or have an empty tag
+        are counted in `skipped`. If a unit ID repeats, the last row wins.
+
+        Tags are stored with `alpha_tag_source: csv` using the priority
+        manual > csv > mqtt: they replace MQTT-discovered tags and previously
+        imported CSV tags, and MQTT ingest will not change them afterwards.
+        Manually edited units keep their tag. Units in the CSV that have not been
+        heard yet are created with no first/last seen time. The file is applied
+        in a single statement: either all rows are imported or, on a database
+        error (500), none are.
+      tags: [units]
+      parameters:
+        - name: system_id
+          in: query
+          description: Target system ID (must exist). Mutually exclusive with system_name.
+          schema:
+            type: integer
+        - name: system_name
+          in: query
+          description: >-
+            Target system name. Mutually exclusive with system_id. Selects the
+            non-deleted system whose name, or one of whose sites' short name (TR's
+            shortName), equals it exactly. The system must already exist: systems are
+            created when trunk-recorder first reports them (MQTT, upload, file watch
+            or TR_DIR), so an unknown name fails with 404 and nothing is created.
+            If several systems match, the request fails with 409 and lists them;
+            use system_id instead.
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: Unit tags CSV file (unit_id,alpha_tag)
+      responses:
+        "200":
+          description: Import successful
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [imported, total, system_id, skipped]
+                properties:
+                  imported:
+                    type: integer
+                    description: Number of rows imported; always equals total, since the import is all-or-nothing (manually tagged units are counted but keep their tag)
+                  total:
+                    type: integer
+                    description: Total valid rows in the CSV
+                  system_id:
+                    type: integer
+                    description: System ID the unit tags were imported into
+                  skipped:
+                    type: integer
+                    description: Rows skipped as malformed, with an invalid unit ID, or with an empty tag
+                  duplicates:
+                    type: integer
+                    description: Rows repeating a unit ID seen earlier in the file; the last one wins (omitted when 0)
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Ambiguous"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
   /units:
     get:
       operationId: listUnits
@@ -1239,6 +1366,11 @@ paths:
       summary: Update unit metadata
       description: >-
         Updates mutable unit fields (alpha_tag, alpha_tag_source).
+        Setting a non-empty alpha_tag marks the unit `alpha_tag_source: manual`
+        (any alpha_tag_source in the same request is ignored), so neither MQTT
+        ingest nor a unit tags CSV re-import will overwrite the edit. An empty
+        alpha_tag is ignored: it neither clears the tag nor marks it manual. An
+        unknown alpha_tag_source value is rejected with 400.
         When CSV_WRITEBACK is enabled and TR_DIR is configured with a unitTagsFile,
         alpha_tag changes are also written back to trunk-recorder's unit CSV file on disk.
       tags: [units]
@@ -3863,9 +3995,9 @@ components:
 
     Ambiguous:
       description: |
-        Ambiguous ID — the plain ID exists in multiple systems.
-        Response includes the list of matching systems to help the
-        client disambiguate.
+        Ambiguous ID — the plain ID (or, for CSV imports, the system_name)
+        matches multiple systems. Response includes the list of matching
+        systems to help the client disambiguate.
       content:
         application/json:
           schema:
@@ -4324,8 +4456,12 @@ components:
           example: Engine 1
         alpha_tag_source:
           type: string
-          description: Source of the alpha tag (e.g., radioreference, manual)
-          example: radioreference
+          description: |
+            Where the alpha tag came from: `manual` (user edit), `csv` (unit tags
+            CSV via TR_DIR or `POST /unit-tags/import`), or `mqtt`. Omitted when
+            the tag was discovered from MQTT/audio metadata. Priority is
+            manual > csv > mqtt; lower-priority sources never overwrite higher ones.
+          example: csv
         first_seen:
           type: string
           format: date-time
@@ -5316,7 +5452,13 @@ components:
           type: string
         alpha_tag_source:
           type: string
-          description: Source of the alpha_tag value (e.g. "manual"). When set to "manual", MQTT ingest will not overwrite the alpha_tag.
+          description: |
+            Source of the alpha_tag value: `manual`, `csv`, `mqtt`, or `directory`.
+            Only takes effect when no other field is changed in the same request
+            (any field edit marks the talkgroup `manual`). Setting `csv` hands the
+            talkgroup back to the imported talkgroup CSV: its directory values are
+            re-applied on the next call. Setting `mqtt` lets MQTT ingest update it
+            again until a CSV entry applies.
         description:
           type: string
         group:
@@ -5332,8 +5474,14 @@ components:
       properties:
         alpha_tag:
           type: string
+          description: "New alpha tag. Marks the unit `alpha_tag_source: manual`. An empty string is ignored."
         alpha_tag_source:
           type: string
+          description: |
+            Source of the alpha_tag value: `manual`, `csv`, or `mqtt`. Only takes
+            effect when no non-empty alpha_tag is set in the same request. Setting `csv` or
+            `mqtt` releases a manual tag so a CSV re-import (or, for `mqtt`, MQTT
+            ingest) can update it again.
 
     # ========== Response Wrappers ==========
 

@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"fmt"
+	"math"
 	"strconv"
 	"time"
 
@@ -172,7 +173,10 @@ func (db *DB) FindUnitSystems(ctx context.Context, unitID int) ([]AmbiguousMatch
 	return matches, nil
 }
 
-// UpdateUnitFields updates mutable unit fields.
+// UpdateUnitFields updates mutable unit fields. Setting a non-empty alpha_tag
+// marks the unit as manually tagged, so neither MQTT ingest nor a unit tags CSV
+// re-import will overwrite the edit (same rule as UpdateTalkgroupFields). An
+// empty alpha_tag leaves the tag and its source unchanged.
 func (db *DB) UpdateUnitFields(ctx context.Context, systemID, unitID int, alphaTag, alphaTagSource *string) error {
 	atVal := ""
 	if alphaTag != nil {
@@ -182,6 +186,7 @@ func (db *DB) UpdateUnitFields(ctx context.Context, systemID, unitID int, alphaT
 	if alphaTagSource != nil {
 		srcVal = *alphaTagSource
 	}
+	srcVal = effectiveUnitPatchSource(srcVal, alphaTag)
 	return db.Q.UpdateUnitFields(ctx, sqlcdb.UpdateUnitFieldsParams{
 		AlphaTag:       atVal,
 		AlphaTagSource: srcVal,
@@ -190,19 +195,71 @@ func (db *DB) UpdateUnitFields(ctx context.Context, systemID, unitID int, alphaT
 	})
 }
 
-// ImportUnitTag imports a unit alpha_tag from a CSV file. Preserves manual tags (user edits)
-// and existing CSV tags (idempotent re-import). Overwrites auto-discovered tags from MQTT.
-func (db *DB) ImportUnitTag(ctx context.Context, systemID, unitID int, alphaTag string) error {
-	_, err := db.Pool.Exec(ctx, `
+// effectiveUnitPatchSource returns the alpha_tag_source a PATCH stores: a
+// non-empty alpha_tag marks the unit manual. An empty alpha_tag is ignored by
+// UpdateUnitFields, so it must not pin the current tag as manual either.
+func effectiveUnitPatchSource(current string, alphaTag *string) string {
+	if alphaTag != nil && *alphaTag != "" {
+		return "manual"
+	}
+	return current
+}
+
+// UnitTag is one unit_id,alpha_tag entry of a unit tags CSV.
+type UnitTag struct {
+	UnitID   int
+	AlphaTag string
+}
+
+// ImportUnitTags imports unit alpha_tags from a unit tags CSV (TR's unitTagsFile)
+// in a single statement, so a large file is applied atomically with one commit.
+// If a unit ID repeats, the last entry wins.
+// Priority is manual > csv > mqtt: the CSV tag replaces MQTT-discovered tags and
+// previously imported CSV tags (so an edited CSV takes effect on re-import), and
+// marks the unit alpha_tag_source = 'csv'. Manual tags (user edits) are never
+// overwritten; a manual unit with an empty tag is filled. Rows that would not
+// change are left untouched so re-importing an unchanged CSV is a no-op.
+// Returns the number of units inserted or changed.
+func (db *DB) ImportUnitTags(ctx context.Context, systemID int, tags []UnitTag) (int64, error) {
+	if len(tags) == 0 {
+		return 0, nil
+	}
+	ids := make([]int32, len(tags))
+	alphaTags := make([]string, len(tags))
+	for i, t := range tags {
+		if t.UnitID <= 0 || t.UnitID > math.MaxInt32 {
+			return 0, fmt.Errorf("unit ID %d out of range", t.UnitID)
+		}
+		ids[i] = int32(t.UnitID)
+		alphaTags[i] = t.AlphaTag
+	}
+	// DISTINCT ON keeps the last entry per unit ID: ON CONFLICT DO UPDATE can't
+	// touch the same row twice in one statement.
+	tag, err := db.Pool.Exec(ctx, `
 		INSERT INTO units (system_id, unit_id, alpha_tag, alpha_tag_source)
-		VALUES ($1, $2, $3, 'csv')
+		SELECT $1, e.unit_id, e.alpha_tag, 'csv'
+		FROM (
+			SELECT DISTINCT ON (f.unit_id) f.unit_id, f.alpha_tag
+			FROM unnest($2::int[], $3::text[]) WITH ORDINALITY AS f(unit_id, alpha_tag, ord)
+			ORDER BY f.unit_id, f.ord DESC
+		) e
 		ON CONFLICT (system_id, unit_id) DO UPDATE SET
-			alpha_tag = CASE WHEN COALESCE(units.alpha_tag_source, '') IN ('manual', 'csv') THEN units.alpha_tag
-			                 ELSE $3 END,
+			alpha_tag = CASE WHEN COALESCE(units.alpha_tag_source, '') = 'manual'
+			                 THEN COALESCE(NULLIF(units.alpha_tag, ''), EXCLUDED.alpha_tag)
+			                 ELSE EXCLUDED.alpha_tag END,
 			alpha_tag_source = CASE WHEN COALESCE(units.alpha_tag_source, '') = 'manual' THEN units.alpha_tag_source
 			                        ELSE 'csv' END
-	`, systemID, unitID, alphaTag)
-	return err
+		WHERE (units.alpha_tag, units.alpha_tag_source) IS DISTINCT FROM (
+			CASE WHEN COALESCE(units.alpha_tag_source, '') = 'manual'
+			     THEN COALESCE(NULLIF(units.alpha_tag, ''), EXCLUDED.alpha_tag)
+			     ELSE EXCLUDED.alpha_tag END,
+			CASE WHEN COALESCE(units.alpha_tag_source, '') = 'manual' THEN units.alpha_tag_source
+			     ELSE 'csv' END)
+	`, systemID, ids, alphaTags)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 // UpsertUnit inserts or updates a unit, never overwriting good data with empty strings.
@@ -271,24 +328,30 @@ func (db *DB) ExportUnits(ctx context.Context, systemIDs []int) ([]UnitExport, e
 }
 
 // ImportUpsertUnit upserts a unit from an export archive.
-// Respects alpha_tag_source priority: manual > csv > mqtt.
+// Respects alpha_tag_source priority: manual > csv > mqtt. An empty archive tag
+// never blanks an existing one, and an archive tag of lower priority (or with no
+// source, i.e. MQTT-discovered) still fills an empty existing tag.
 func (db *DB) ImportUpsertUnit(ctx context.Context, systemID, unitID int,
 	alphaTag, alphaTagSource string, firstSeen, lastSeen *time.Time) error {
 
 	hasSource := db.columnExists(ctx, "units", "alpha_tag_source")
 
 	if hasSource {
+		// NULLIF($4, ''): rows exported without a source must insert NULL, not ''
+		// (chk_units_alpha_tag_source rejects '').
 		_, err := db.Pool.Exec(ctx, `
 			INSERT INTO units (system_id, unit_id, alpha_tag, alpha_tag_source, first_seen, last_seen)
-			VALUES ($1, $2, $3, $4, $5, $6)
+			VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6)
 			ON CONFLICT (system_id, unit_id) DO UPDATE SET
 				alpha_tag = CASE
+					WHEN NULLIF($3, '') IS NULL THEN units.alpha_tag
 					WHEN $4 = 'manual' THEN $3
 					WHEN $4 = 'csv' AND COALESCE(units.alpha_tag_source, '') NOT IN ('manual') THEN $3
 					WHEN $4 = 'mqtt' AND COALESCE(units.alpha_tag_source, '') NOT IN ('manual', 'csv') THEN $3
-					ELSE units.alpha_tag
+					ELSE COALESCE(NULLIF(units.alpha_tag, ''), $3)
 				END,
 				alpha_tag_source = CASE
+					WHEN NULLIF($3, '') IS NULL THEN units.alpha_tag_source
 					WHEN $4 = 'manual' THEN $4
 					WHEN $4 = 'csv' AND COALESCE(units.alpha_tag_source, '') NOT IN ('manual') THEN $4
 					WHEN $4 = 'mqtt' AND COALESCE(units.alpha_tag_source, '') NOT IN ('manual', 'csv') THEN $4

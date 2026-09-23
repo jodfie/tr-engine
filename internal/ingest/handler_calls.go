@@ -12,6 +12,8 @@ import (
 
 // upsertAndEnrichTalkgroup upserts a talkgroup, enriches it from the directory,
 // and returns the effective alpha tag (respects manual > csv > mqtt priority).
+// Every ingest path that upserts a talkgroup from MQTT/audio metadata should use
+// this so a talkgroup first heard after a CSV import gets the CSV tag right away.
 func (p *Pipeline) upsertAndEnrichTalkgroup(ctx context.Context, systemID, tgid int, alphaTag, tag, group, description string, eventTime time.Time) string {
 	effectiveTag := alphaTag
 	if dbTag, err := p.db.UpsertTalkgroup(ctx, systemID, tgid, alphaTag, tag, group, description, eventTime); err != nil {
@@ -19,8 +21,13 @@ func (p *Pipeline) upsertAndEnrichTalkgroup(ctx context.Context, systemID, tgid 
 	} else if dbTag != "" {
 		effectiveTag = dbTag
 	}
-	// Enrich from directory and read back enriched tag if still empty
-	if enriched, _ := p.db.EnrichTalkgroupsFromDirectory(ctx, systemID, tgid); enriched > 0 && effectiveTag == "" {
+	// Enrich from the directory. It only writes when something changes (e.g. a CSV
+	// tag replacing the MQTT tag UpsertTalkgroup just stored), so re-read the tag
+	// in that case instead of returning the pre-enrichment value.
+	enriched, err := p.db.EnrichTalkgroupsFromDirectory(ctx, systemID, tgid)
+	if err != nil {
+		p.log.Warn().Err(err).Int("tgid", tgid).Msg("failed to enrich talkgroup from directory")
+	} else if enriched > 0 {
 		if dbTag, err := p.db.GetTalkgroupAlphaTag(ctx, systemID, tgid); err == nil && dbTag != "" {
 			effectiveTag = dbTag
 		}
@@ -127,7 +134,7 @@ func (p *Pipeline) handleCallStart(payload []byte) error {
 			SrcNum:        &srcNum,
 			SystemName:    call.SysName,
 			SiteShortName: call.SysName,
-			TgAlphaTag:    call.TalkgroupAlphaTag,
+			TgAlphaTag:    effectiveTgTag,
 			TgDescription: call.TalkgroupDescription,
 			TgTag:         call.TalkgroupTag,
 			TgGroup:       call.TalkgroupGroup,
@@ -192,7 +199,7 @@ func (p *Pipeline) handleCallStart(payload []byte) error {
 
 	// Create call group
 	cgID, err := p.db.UpsertCallGroup(ctx, identity.SystemID, call.Talkgroup, startTime,
-		call.TalkgroupAlphaTag, call.TalkgroupDescription, call.TalkgroupTag, call.TalkgroupGroup,
+		effectiveTgTag, call.TalkgroupDescription, call.TalkgroupTag, call.TalkgroupGroup,
 	)
 	if err != nil {
 		p.log.Warn().Err(err).Msg("failed to upsert call group")
@@ -462,6 +469,7 @@ func (p *Pipeline) handleCallStartFromEnd(ctx context.Context, msg *CallEndMsg) 
 		effectiveTgTag = p.upsertAndEnrichTalkgroup(ctx, identity.SystemID, call.Talkgroup,
 			call.TalkgroupAlphaTag, call.TalkgroupTag, call.TalkgroupGroup, call.TalkgroupDescription, startTime)
 	}
+	row.TgAlphaTag = effectiveTgTag
 
 	// Upsert unit — capture effective tag from DB
 	effectiveUnitTag := call.UnitAlphaTag
@@ -558,7 +566,7 @@ func (p *Pipeline) handleCallStartFromEnd(ctx context.Context, msg *CallEndMsg) 
 
 	// Create call group (same as handleCallStart)
 	cgID, cgErr := p.db.UpsertCallGroup(ctx, identity.SystemID, call.Talkgroup, startTime,
-		call.TalkgroupAlphaTag, call.TalkgroupDescription, call.TalkgroupTag, call.TalkgroupGroup,
+		effectiveTgTag, call.TalkgroupDescription, call.TalkgroupTag, call.TalkgroupGroup,
 	)
 	if cgErr != nil {
 		p.log.Warn().Err(cgErr).Msg("failed to upsert call group from call_end backfill")

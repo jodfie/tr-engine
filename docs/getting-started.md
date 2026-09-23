@@ -368,13 +368,28 @@ curl http://localhost:8080/api/v1/health
 ## What happens on first run
 
 1. tr-engine connects to PostgreSQL (and MQTT if configured)
-2. If `TR_DIR` is set, reads TR's `config.json` and imports talkgroup CSVs into the reference directory
+2. If `TR_DIR` is set, reads TR's `config.json` and imports talkgroup and unit tag CSVs (and re-imports them when they change)
 3. If `WATCH_DIR` is set (directly or via `TR_DIR`), backfills existing audio files and starts watching for new ones
 4. If MQTT is configured, subscribes to the configured topics
 5. Systems, sites, talkgroups, and units auto-populate as data flows
 6. The SSE event stream (`/api/v1/events/stream`) begins pushing events to connected clients
 
-There's no manual system/site/talkgroup configuration needed — everything is discovered automatically. Talkgroup names come from TR's CSV files (via `TR_DIR` auto-import or CSV upload at `/api/v1/talkgroup-directory/import`) and from call metadata in the MQTT feed.
+There's no manual system/site/talkgroup configuration needed — everything is discovered automatically. Talkgroup and unit names come from TR's CSV files (via `TR_DIR` auto-import, or CSV upload at `/api/v1/talkgroup-directory/import` and `/api/v1/unit-tags/import` when tr-engine can't read TR's files) and from call metadata in the MQTT feed. With `TR_DIR`, tr-engine re-imports a CSV within about a minute of it changing on disk. Uploads go into an existing system (`system_id`, or `system_name` matching its name or TR shortName), so upload after trunk-recorder has reported the system. Names are prioritized manual edit > CSV > MQTT: once a CSV provides a name, MQTT feeds (including several TR instances that disagree) no longer change it, and a manual edit in the UI is never overwritten. To hand an edited talkgroup or unit back to its CSV name, PATCH it with `{"alpha_tag_source": "csv"}`.
+
+> **Upgrading from v0.9.11 or earlier:** older versions did not mark UI edits of CSV-provided names as manual, so tr-engine can't tell an edit from a CSV name. On the first start after upgrading it keeps every CSV-sourced talkgroup/unit name as a manual edit unless the `TR_DIR` CSV it is about to import contains that exact name. That covers all CSV-sourced names on upload-only setups, CSV changes the old version never applied, and every CSV-sourced name of a system whose `TR_DIR` CSV fails to load on that start (the log names the file; fix it, run the SQL below, then restart). The startup log lists them, and the full list is stored in the database. Hand one back with the PATCH above, or all of them (including any you edit again after upgrading) with:
+>
+> ```sql
+> UPDATE talkgroups t SET alpha_tag_source = 'csv'
+> FROM data_fixups f, jsonb_array_elements_text(f.detail->'talkgroups') AS k(id)
+> WHERE f.name = 'keep-pre-csv-priority-tag-edits' AND t.alpha_tag_source = 'manual'
+>   AND k.id = t.system_id || ':' || t.tgid;
+> UPDATE units u SET alpha_tag_source = 'csv'
+> FROM data_fixups f, jsonb_array_elements_text(f.detail->'units') AS k(id)
+> WHERE f.name = 'keep-pre-csv-priority-tag-edits' AND u.alpha_tag_source = 'manual'
+>   AND k.id = u.system_id || ':' || u.unit_id;
+> ```
+>
+> Released talkgroups take their CSV name on their next call; released units on the next unit tags import.
 
 ## Troubleshooting
 

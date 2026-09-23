@@ -133,6 +133,9 @@ func (h *TalkgroupsHandler) UpdateTalkgroup(w http.ResponseWriter, r *http.Reque
 		WriteErrorWithCode(w, http.StatusBadRequest, ErrInvalidBody, "invalid request body")
 		return
 	}
+	if !checkTagSource(w, patch.AlphaTagSource, talkgroupTagSources) {
+		return
+	}
 
 	if err := h.db.UpdateTalkgroupFields(r.Context(), cid.SystemID, cid.EntityID,
 		patch.AlphaTag, patch.AlphaTagSource, patch.Description, patch.Group, patch.Tag, patch.Priority); err != nil {
@@ -146,34 +149,26 @@ func (h *TalkgroupsHandler) UpdateTalkgroup(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Best-effort sync: update talkgroup_directory and CSV file on disk
+	// Best-effort writeback to TR's talkgroup CSV (CSV_WRITEBACK). The
+	// talkgroup_directory row mirrors the imported CSV, so it only takes the edit
+	// when the CSV file on disk did too. Syncing it otherwise would turn the edit
+	// into a "CSV" value: releasing the talkgroup (alpha_tag_source csv/mqtt)
+	// would then re-apply the old edit instead of the real CSV or MQTT tag.
 	if patch.AlphaTag != nil {
-		log := hlog.FromRequest(r)
-
-		// Sync talkgroup_directory reference table
-		mode := ""
-		if tg.Mode != nil {
-			mode = *tg.Mode
-		}
-		priority := 0
-		if tg.Priority != nil {
-			priority = *tg.Priority
-		}
-		if dirErr := h.db.UpsertTalkgroupDirectory(r.Context(), cid.SystemID, cid.EntityID,
-			tg.AlphaTag, mode, tg.Description, tg.Tag, tg.Group, priority,
-		); dirErr != nil {
-			log.Warn().Err(dirErr).Int("system_id", cid.SystemID).Int("tgid", cid.EntityID).
-				Msg("failed to sync talkgroup_directory")
-		}
-
-		// Write back to TR's talkgroup CSV if path is known
 		if csvPath, ok := h.csvPaths[cid.SystemID]; ok {
+			log := hlog.FromRequest(r)
 			if csvErr := trconfig.UpdateTalkgroupCSV(csvPath, cid.EntityID, *patch.AlphaTag); csvErr != nil {
 				log.Warn().Err(csvErr).Str("csv_path", csvPath).Int("tgid", cid.EntityID).
 					Msg("failed to write back talkgroup CSV")
 			} else {
 				log.Info().Str("csv_path", csvPath).Int("tgid", cid.EntityID).Str("alpha_tag", *patch.AlphaTag).
 					Msg("talkgroup CSV updated")
+				if dirErr := h.db.UpsertTalkgroupDirectory(r.Context(), cid.SystemID, cid.EntityID,
+					*patch.AlphaTag, "", "", "", "", 0,
+				); dirErr != nil {
+					log.Warn().Err(dirErr).Int("system_id", cid.SystemID).Int("tgid", cid.EntityID).
+						Msg("failed to sync talkgroup_directory")
+				}
 			}
 		}
 	}
@@ -343,42 +338,18 @@ func (h *TalkgroupsHandler) ListTalkgroupDirectory(w http.ResponseWriter, r *htt
 }
 
 // ImportTalkgroupDirectory accepts a CSV upload and imports it into the talkgroup directory.
-// Accepts either system_id (existing) or system_name (creates system if needed).
+// Accepts either system_id or system_name (an existing system; see resolveImportSystem).
 // POST /api/v1/talkgroup-directory/import?system_id=1
 // POST /api/v1/talkgroup-directory/import?system_name=butco
 // Content-Type: multipart/form-data (field name: "file")
 func (h *TalkgroupsHandler) ImportTalkgroupDirectory(w http.ResponseWriter, r *http.Request) {
-	var systemID int
-
-	if id, ok := QueryInt(r, "system_id"); ok && id > 0 {
-		// Verify system exists
-		if _, err := h.db.GetSystemByID(r.Context(), id); err != nil {
-			WriteError(w, http.StatusNotFound, fmt.Sprintf("system_id %d not found", id))
-			return
-		}
-		systemID = id
-	} else if name, ok := QueryString(r, "system_name"); ok && name != "" {
-		// Find or create system by name
-		id, _, err := h.db.FindOrCreateSystem(r.Context(), "csv-import", name, "")
-		if err != nil {
-			WriteError(w, http.StatusInternalServerError, fmt.Sprintf("failed to resolve system %q: %v", name, err))
-			return
-		}
-		systemID = id
-	} else {
-		WriteError(w, http.StatusBadRequest, "system_id or system_name query parameter is required")
+	systemID, ok := resolveImportSystem(w, r, h.db)
+	if !ok {
 		return
 	}
 
-	// 10 MB max upload
-	if err := r.ParseMultipartForm(10 << 20); err != nil {
-		WriteError(w, http.StatusBadRequest, "invalid multipart form (10 MB max)")
-		return
-	}
-
-	file, _, err := r.FormFile("file")
-	if err != nil {
-		WriteError(w, http.StatusBadRequest, "missing 'file' field in multipart form")
+	file, ok := openImportFile(w, r)
+	if !ok {
 		return
 	}
 	defer file.Close()
@@ -404,8 +375,13 @@ func (h *TalkgroupsHandler) ImportTalkgroupDirectory(w http.ResponseWriter, r *h
 		imported++
 	}
 
-	// Enrich heard talkgroups from the newly imported directory data
-	enriched, _ := h.db.EnrichTalkgroupsFromDirectory(r.Context(), systemID, 0)
+	// Apply the newly imported directory data to heard talkgroups (CSV tags
+	// replace MQTT-discovered ones; manual edits are kept).
+	enriched, enrichErr := h.db.EnrichTalkgroupsFromDirectory(r.Context(), systemID, 0)
+	if enrichErr != nil {
+		hlog.FromRequest(r).Warn().Err(enrichErr).Int("system_id", systemID).
+			Msg("failed to enrich talkgroups from directory")
+	}
 
 	resp := map[string]any{
 		"imported":  imported,

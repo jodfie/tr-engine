@@ -190,8 +190,17 @@ func (db *DB) UpdateTalkgroupFields(ctx context.Context, systemID, tgid int,
 	})
 }
 
+// effectiveTalkgroupPatchSource returns the alpha_tag_source a PATCH stores:
+// any field the PATCH actually changes marks the talkgroup manual. Empty strings
+// and a negative priority are ignored by UpdateTalkgroupFields, so they must not
+// pin the current values as manual either.
 func effectiveTalkgroupPatchSource(current string, alphaTag, description, group, tag *string, priority *int) string {
-	if alphaTag != nil || description != nil || group != nil || tag != nil || priority != nil {
+	for _, v := range []*string{alphaTag, description, group, tag} {
+		if v != nil && *v != "" {
+			return "manual"
+		}
+	}
+	if priority != nil && *priority >= 0 {
 		return "manual"
 	}
 	return current
@@ -239,9 +248,13 @@ func (db *DB) GetTalkgroupAlphaTag(ctx context.Context, systemID, tgid int) (str
 	return tag, err
 }
 
-// EnrichTalkgroupsFromDirectory fills missing talkgroup fields from the directory.
+// EnrichTalkgroupsFromDirectory applies the talkgroup directory (imported CSV) to
+// heard talkgroups with manual > csv > mqtt priority: a directory alpha_tag
+// replaces an MQTT-discovered tag and marks the talkgroup 'csv'; manual edits are
+// only filled where empty. See the query for the per-field rules.
 // If tgid is 0, enriches all heard talkgroups in the system (bulk mode).
 // If tgid > 0, enriches only that specific talkgroup (per-call mode).
+// Returns the number of talkgroups actually changed (0 when already up to date).
 func (db *DB) EnrichTalkgroupsFromDirectory(ctx context.Context, systemID, tgid int) (int64, error) {
 	return db.Q.EnrichTalkgroupsFromDirectory(ctx, sqlcdb.EnrichTalkgroupsFromDirectoryParams{
 		SystemID: systemID,
@@ -681,9 +694,20 @@ func (db *DB) ExportTalkgroupDirectory(ctx context.Context, systemIDs []int) ([]
 	return result, rows.Err()
 }
 
+// importTalkgroupWins is true when the archive row's alpha_tag_source ($4) wins
+// over the existing row's: manual > csv > mqtt > directory, where an equal source
+// wins (except that archive rows without a source never win).
+const importTalkgroupWins = `($4 = 'manual'
+	OR ($4 = 'csv' AND COALESCE(talkgroups.alpha_tag_source, '') NOT IN ('manual'))
+	OR ($4 = 'mqtt' AND COALESCE(talkgroups.alpha_tag_source, '') NOT IN ('manual', 'csv'))
+	OR ($4 = 'directory' AND COALESCE(talkgroups.alpha_tag_source, '') NOT IN ('manual', 'csv', 'mqtt')))`
+
 // ImportUpsertTalkgroup upserts a talkgroup from an export archive.
-// Respects alpha_tag_source priority: manual > csv > mqtt > directory.
-// Always enriches empty description/tag/group/mode fields regardless of source priority.
+// Respects alpha_tag_source priority: manual > csv > mqtt > directory. The source
+// governs the whole tag set (alpha_tag/tag/group/description/mode/priority), as it
+// does for UpsertTalkgroup: when the archive row wins, its non-empty values
+// replace the existing ones; otherwise it only fills empty fields. Empty archive
+// values never blank existing data.
 func (db *DB) ImportUpsertTalkgroup(ctx context.Context, systemID, tgid int,
 	alphaTag, alphaTagSource, tag, group, description, mode string, priority *int,
 	firstSeen, lastSeen *time.Time) error {
@@ -700,29 +724,27 @@ func (db *DB) ImportUpsertTalkgroup(ctx context.Context, systemID, tgid int,
 	modeVal := pqString(mode)
 
 	if hasSource {
+		// NULLIF($4, ''): rows exported without a source must insert NULL, not ''
+		// (chk_talkgroups_alpha_tag_source rejects '').
 		_, err := db.Pool.Exec(ctx, `
 			INSERT INTO talkgroups (system_id, tgid, alpha_tag, alpha_tag_source, tag, "group", description, mode, priority, first_seen, last_seen)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+			VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6, $7, $8, $9, $10, $11)
 			ON CONFLICT (system_id, tgid) DO UPDATE SET
-				alpha_tag = CASE
-					WHEN $4 = 'manual' THEN $3
-					WHEN $4 = 'csv' AND COALESCE(talkgroups.alpha_tag_source, '') NOT IN ('manual') THEN $3
-					WHEN $4 = 'mqtt' AND COALESCE(talkgroups.alpha_tag_source, '') NOT IN ('manual', 'csv') THEN $3
-					WHEN $4 = 'directory' AND COALESCE(talkgroups.alpha_tag_source, '') NOT IN ('manual', 'csv', 'mqtt') THEN $3
-					ELSE talkgroups.alpha_tag
-				END,
-				alpha_tag_source = CASE
-					WHEN $4 = 'manual' THEN $4
-					WHEN $4 = 'csv' AND COALESCE(talkgroups.alpha_tag_source, '') NOT IN ('manual') THEN $4
-					WHEN $4 = 'mqtt' AND COALESCE(talkgroups.alpha_tag_source, '') NOT IN ('manual', 'csv') THEN $4
-					WHEN $4 = 'directory' AND COALESCE(talkgroups.alpha_tag_source, '') NOT IN ('manual', 'csv', 'mqtt') THEN $4
-					ELSE talkgroups.alpha_tag_source
-				END,
-				tag         = COALESCE(NULLIF(talkgroups.tag, ''), NULLIF($5, '')),
-				"group"     = COALESCE(NULLIF(talkgroups."group", ''), NULLIF($6, '')),
-				description = COALESCE(NULLIF(talkgroups.description, ''), NULLIF($7, '')),
-				mode        = COALESCE(talkgroups.mode, $8),
-				priority    = COALESCE(talkgroups.priority, $9),
+				alpha_tag = CASE WHEN `+importTalkgroupWins+`
+				                 THEN COALESCE(NULLIF($3, ''), talkgroups.alpha_tag)
+				                 ELSE COALESCE(NULLIF(talkgroups.alpha_tag, ''), NULLIF($3, ''), talkgroups.alpha_tag) END,
+				alpha_tag_source = CASE WHEN `+importTalkgroupWins+` THEN $4 ELSE talkgroups.alpha_tag_source END,
+				tag = CASE WHEN `+importTalkgroupWins+`
+				           THEN COALESCE(NULLIF($5, ''), talkgroups.tag)
+				           ELSE COALESCE(NULLIF(talkgroups.tag, ''), NULLIF($5, ''), talkgroups.tag) END,
+				"group" = CASE WHEN `+importTalkgroupWins+`
+				               THEN COALESCE(NULLIF($6, ''), talkgroups."group")
+				               ELSE COALESCE(NULLIF(talkgroups."group", ''), NULLIF($6, ''), talkgroups."group") END,
+				description = CASE WHEN `+importTalkgroupWins+`
+				                   THEN COALESCE(NULLIF($7, ''), talkgroups.description)
+				                   ELSE COALESCE(NULLIF(talkgroups.description, ''), NULLIF($7, ''), talkgroups.description) END,
+				mode     = CASE WHEN `+importTalkgroupWins+` THEN COALESCE($8, talkgroups.mode) ELSE COALESCE(talkgroups.mode, $8) END,
+				priority = CASE WHEN `+importTalkgroupWins+` THEN COALESCE($9, talkgroups.priority) ELSE COALESCE(talkgroups.priority, $9) END,
 				first_seen  = LEAST(talkgroups.first_seen, $10),
 				last_seen   = GREATEST(talkgroups.last_seen, $11)
 		`, systemID, tgid, alphaTag, alphaTagSource, tag, group, description, modeVal, prioVal, firstSeen, lastSeen)

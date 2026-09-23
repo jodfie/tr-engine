@@ -56,16 +56,13 @@ func (p *Pipeline) handleUnitEvent(eventType string, payload []byte) error {
 		return nil
 	}
 
-	// Upsert talkgroup if present — capture effective tag from DB
+	// Upsert talkgroup + enrich from directory if present — capture effective tag.
+	// Enrichment matters here too: a talkgroup first heard via a unit event (e.g.
+	// an affiliation) must pick up its CSV tag, not keep this instance's MQTT tag.
 	effectiveTgTag := data.TalkgroupAlphaTag
 	if data.Talkgroup > 0 {
-		if dbTag, err := p.db.UpsertTalkgroup(ctx, identity.SystemID, data.Talkgroup,
-			data.TalkgroupAlphaTag, data.TalkgroupTag, data.TalkgroupGroup, data.TalkgroupDescription, ts,
-		); err != nil {
-			p.log.Warn().Err(err).Int("tgid", data.Talkgroup).Msg("failed to upsert talkgroup")
-		} else if dbTag != "" {
-			effectiveTgTag = dbTag
-		}
+		effectiveTgTag = p.upsertAndEnrichTalkgroup(ctx, identity.SystemID, data.Talkgroup,
+			data.TalkgroupAlphaTag, data.TalkgroupTag, data.TalkgroupGroup, data.TalkgroupDescription, ts)
 	}
 
 	// Upsert unit — returns the DB's effective alpha_tag (respects manual > csv > mqtt priority)

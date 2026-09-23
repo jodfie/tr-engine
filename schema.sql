@@ -657,6 +657,21 @@ CREATE TABLE system_merge_log (
 );
 
 -- ============================================================
+-- 21. data_fixups (one-time data fixups already run)
+--
+-- Records one-time data fixups that tr-engine runs at startup
+-- when upgrading an existing database (e.g. keeping tag edits
+-- made before CSV tags took priority over MQTT tags), with
+-- what each one changed in detail.
+-- ============================================================
+
+CREATE TABLE data_fixups (
+    name        text         PRIMARY KEY,
+    applied_at  timestamptz  NOT NULL DEFAULT now(),
+    detail      jsonb
+);
+
+-- ============================================================
 -- Helper: create_monthly_partition()
 --
 -- Creates a monthly partition for a given table if it doesn't

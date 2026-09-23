@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -9,13 +11,20 @@ import (
 	"github.com/snarg/tr-engine/internal/trconfig"
 )
 
+// unitTagImporter is the subset of database.DB used by ImportUnitTags.
+type unitTagImporter interface {
+	importSystemResolver
+	ImportUnitTags(ctx context.Context, systemID int, tags []database.UnitTag) (int64, error)
+}
+
 type UnitsHandler struct {
 	db       *database.DB
+	tags     unitTagImporter
 	csvPaths map[int]string // system_id → unit CSV file path for writeback
 }
 
 func NewUnitsHandler(db *database.DB, csvPaths map[int]string) *UnitsHandler {
-	return &UnitsHandler{db: db, csvPaths: csvPaths}
+	return &UnitsHandler{db: db, tags: db, csvPaths: csvPaths}
 }
 
 var unitSortFields = map[string]string{
@@ -120,6 +129,9 @@ func (h *UnitsHandler) UpdateUnit(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := DecodeJSON(r, &patch); err != nil {
 		WriteErrorWithCode(w, http.StatusBadRequest, ErrInvalidBody, "invalid request body")
+		return
+	}
+	if !checkTagSource(w, patch.AlphaTagSource, unitTagSources) {
 		return
 	}
 
@@ -267,6 +279,68 @@ func (h *UnitsHandler) ListUnitEvents(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ImportUnitTags accepts a trunk-recorder unit tags CSV upload (TR's unitTagsFile:
+// unit_id,alpha_tag) and imports it into the units table with alpha_tag_source
+// 'csv'. CSV tags replace MQTT-discovered and previously imported CSV tags;
+// manual edits are kept. The whole file is applied in one statement, so it is
+// all-or-nothing. Accepts either system_id or system_name (an existing system,
+// resolved like the talkgroup directory import; see resolveImportSystem).
+// POST /api/v1/unit-tags/import?system_id=1
+// POST /api/v1/unit-tags/import?system_name=butco
+// Content-Type: multipart/form-data (field name: "file")
+func (h *UnitsHandler) ImportUnitTags(w http.ResponseWriter, r *http.Request) {
+	systemID, ok := resolveImportSystem(w, r, h.tags)
+	if !ok {
+		return
+	}
+
+	file, ok := openImportFile(w, r)
+	if !ok {
+		return
+	}
+	defer file.Close()
+
+	result, err := trconfig.ParseUnitCSV(file)
+	if err != nil {
+		WriteError(w, http.StatusBadRequest, fmt.Sprintf("failed to parse CSV: %v", err))
+		return
+	}
+	if len(result.Entries) == 0 {
+		WriteError(w, http.StatusBadRequest, "CSV contains no valid unit tag entries")
+		return
+	}
+
+	changed, err := h.tags.ImportUnitTags(r.Context(), systemID, unitTagsFromCSV(result.Entries))
+	if err != nil {
+		hlog.FromRequest(r).Error().Err(err).Int("system_id", systemID).
+			Int("rows", len(result.Entries)).Msg("failed to import unit tags")
+		WriteError(w, http.StatusInternalServerError, "failed to import unit tags")
+		return
+	}
+	hlog.FromRequest(r).Info().Int("system_id", systemID).Int("rows", len(result.Entries)).
+		Int64("changed", changed).Msg("unit tags imported")
+
+	resp := map[string]any{
+		"imported":  len(result.Entries),
+		"total":     len(result.Entries),
+		"system_id": systemID,
+		"skipped":   result.Skipped,
+	}
+	if result.Duplicates > 0 {
+		resp["duplicates"] = result.Duplicates
+	}
+	WriteJSON(w, http.StatusOK, resp)
+}
+
+// unitTagsFromCSV converts parsed unit tags CSV rows for database.ImportUnitTags.
+func unitTagsFromCSV(entries []trconfig.UnitEntry) []database.UnitTag {
+	tags := make([]database.UnitTag, len(entries))
+	for i, e := range entries {
+		tags[i] = database.UnitTag{UnitID: e.UnitID, AlphaTag: e.AlphaTag}
+	}
+	return tags
+}
+
 // Routes registers unit routes on the given router.
 func (h *UnitsHandler) Routes(r chi.Router) {
 	r.Get("/units", h.ListUnits)
@@ -274,4 +348,5 @@ func (h *UnitsHandler) Routes(r chi.Router) {
 	r.Patch("/units/{id}", h.UpdateUnit)
 	r.Get("/units/{id}/calls", h.ListUnitCalls)
 	r.Get("/units/{id}/events", h.ListUnitEvents)
+	r.Post("/unit-tags/import", h.ImportUnitTags)
 }

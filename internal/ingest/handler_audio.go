@@ -134,11 +134,20 @@ func (p *Pipeline) handleAudio(payload []byte) error {
 // Returns (callID, startTime, effectiveTgAlphaTag, error). The effective tag comes from the DB
 // and respects the manual > csv > mqtt priority chain.
 func (p *Pipeline) createCallFromAudio(ctx context.Context, identity *ResolvedIdentity, meta *AudioMetadata, startTime time.Time) (int64, time.Time, string, error) {
+	// Upsert talkgroup + enrich from directory first so the call row and call group
+	// carry the effective tag rather than whatever this TR instance reported. Done
+	// before the final dedup check so it doesn't widen the check → INSERT window.
+	effectiveTgTag := meta.TalkgroupTag
+	if meta.Talkgroup > 0 {
+		effectiveTgTag = p.upsertAndEnrichTalkgroup(ctx, identity.SystemID, meta.Talkgroup,
+			meta.TalkgroupTag, meta.TalkgroupGroupTag, meta.TalkgroupGroup, meta.TalkgroupDesc, startTime)
+	}
+
 	// Final dedup check right before INSERT — narrows the TOCTOU race window
 	// between concurrent MQTT (handleAudio) and file-watch (processWatchedFile)
 	// paths from seconds to sub-millisecond.
 	if existingID, existingST, err := p.db.FindCallForAudio(ctx, identity.SystemID, meta.Talkgroup, startTime); err == nil {
-		return existingID, existingST, meta.TalkgroupTag, nil
+		return existingID, existingST, effectiveTgTag, nil
 	}
 
 	freq := int64(meta.Freq)
@@ -172,7 +181,7 @@ func (p *Pipeline) createCallFromAudio(ctx context.Context, identity *ResolvedId
 		SrcNum:        &srcNum,
 		SystemName:    meta.ShortName,
 		SiteShortName: meta.ShortName,
-		TgAlphaTag:    meta.TalkgroupTag,
+		TgAlphaTag:    effectiveTgTag,
 		TgDescription: meta.TalkgroupDesc,
 		TgTag:         meta.TalkgroupGroupTag,
 		TgGroup:       meta.TalkgroupGroup,
@@ -189,16 +198,9 @@ func (p *Pipeline) createCallFromAudio(ctx context.Context, identity *ResolvedId
 		return 0, time.Time{}, "", fmt.Errorf("insert call from audio: %w", err)
 	}
 
-	// Upsert talkgroup + enrich from directory — capture effective tag
-	effectiveTgTag := meta.TalkgroupTag
-	if meta.Talkgroup > 0 {
-		effectiveTgTag = p.upsertAndEnrichTalkgroup(ctx, identity.SystemID, meta.Talkgroup,
-			meta.TalkgroupTag, meta.TalkgroupGroupTag, meta.TalkgroupGroup, meta.TalkgroupDesc, startTime)
-	}
-
 	// Create call group
 	cgID, cgErr := p.db.UpsertCallGroup(ctx, identity.SystemID, meta.Talkgroup, startTime,
-		meta.TalkgroupTag, meta.TalkgroupDesc, meta.TalkgroupGroupTag, meta.TalkgroupGroup,
+		effectiveTgTag, meta.TalkgroupDesc, meta.TalkgroupGroupTag, meta.TalkgroupGroup,
 	)
 	if cgErr == nil {
 		_ = p.db.SetCallGroupID(ctx, callID, startTime, cgID)
