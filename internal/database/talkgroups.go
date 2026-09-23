@@ -359,6 +359,8 @@ func (db *DB) ListTalkgroupUnits(ctx context.Context, systemID, tgid, windowMinu
 			u.unit_id, COALESCE(u.alpha_tag, ''), COALESCE(u.alpha_tag_source, ''),
 			u.first_seen, u.last_seen,
 			u.last_event_type, u.last_event_time, u.last_event_tgid,
+			COALESCE(u.recorder_alpha_tag, ''), u.recorder_alpha_tag_seen,
+			COALESCE(u.ota_alpha_tag, ''), u.ota_alpha_tag_first_seen, u.ota_alpha_tag_last_seen,
 			uc.call_count
 		FROM units u
 		JOIN systems s ON s.system_id = u.system_id
@@ -379,6 +381,8 @@ func (db *DB) ListTalkgroupUnits(ctx context.Context, systemID, tgid, windowMinu
 			&u.UnitID, &u.AlphaTag, &u.AlphaTagSource,
 			&u.FirstSeen, &u.LastSeen,
 			&u.LastEventType, &u.LastEventTime, &u.LastEventTgid,
+			&u.RecorderAlphaTag, &u.RecorderAlphaTagSeen,
+			&u.OTAAlphaTag, &u.OTAAlphaTagFirstSeen, &u.OTAAlphaTagLastSeen,
 			&u.CallCount,
 		); err != nil {
 			return nil, 0, err

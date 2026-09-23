@@ -111,6 +111,12 @@ type UnitRecord struct {
 	AlphaTagSource string     `json:"alpha_tag_source,omitempty"`
 	FirstSeen      *time.Time `json:"first_seen,omitempty"`
 	LastSeen       *time.Time `json:"last_seen,omitempty"`
+	// Optional tag observations (absent in archives from older versions).
+	RecorderAlphaTag     string     `json:"recorder_alpha_tag,omitempty"`
+	RecorderAlphaTagSeen *time.Time `json:"recorder_alpha_tag_seen,omitempty"`
+	OTAAlphaTag          string     `json:"ota_alpha_tag,omitempty"`
+	OTAAlphaTagFirstSeen *time.Time `json:"ota_alpha_tag_first_seen,omitempty"`
+	OTAAlphaTagLastSeen  *time.Time `json:"ota_alpha_tag_last_seen,omitempty"`
 }
 
 // CallRecord is a JSONL record for a call.

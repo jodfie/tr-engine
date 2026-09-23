@@ -122,6 +122,26 @@ func TestParseRdioScannerFields_Sources(t *testing.T) {
 	}
 }
 
+func TestParseRdioScannerFields_SourcesTagOTA(t *testing.T) {
+	fields := map[string]string{
+		"talkgroup": "100",
+		"sources":   `[{"src":338,"time":1700000000,"pos":0.0,"tag":"FRNSW - P 338 - Jindabyne","tag_ota":"P338 FF1"},{"src":339,"time":1700000003,"pos":3.0,"tag":"Unit 2"}]`,
+	}
+	meta, err := ParseRdioScannerFields(fields)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(meta.SrcList) != 2 {
+		t.Fatalf("SrcList length = %d, want 2", len(meta.SrcList))
+	}
+	if meta.SrcList[0].TagOTA != "P338 FF1" {
+		t.Errorf("SrcList[0].TagOTA = %q, want %q", meta.SrcList[0].TagOTA, "P338 FF1")
+	}
+	if meta.SrcList[1].TagOTA != "" {
+		t.Errorf("SrcList[1].TagOTA = %q, want empty", meta.SrcList[1].TagOTA)
+	}
+}
+
 func TestParseRdioScannerFields_Frequencies(t *testing.T) {
 	fields := map[string]string{
 		"talkgroup":   "100",

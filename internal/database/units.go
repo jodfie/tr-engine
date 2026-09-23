@@ -36,20 +36,28 @@ type UnitAPI struct {
 	LastEventTime  *time.Time `json:"last_event_time,omitempty"`
 	LastEventTgid  *int       `json:"last_event_tgid,omitempty"`
 	LastEventTgTag string     `json:"last_event_tg_tag,omitempty"`
-	CallCount      *int       `json:"call_count,omitempty"`
-	RelevanceScore *int       `json:"relevance_score,omitempty"`
+	// Tag observations stored beside alpha_tag (read-only; never change it).
+	RecorderAlphaTag     string     `json:"recorder_alpha_tag,omitempty"`
+	RecorderAlphaTagSeen *time.Time `json:"recorder_alpha_tag_seen,omitempty"`
+	OTAAlphaTag          string     `json:"ota_alpha_tag,omitempty"`
+	OTAAlphaTagFirstSeen *time.Time `json:"ota_alpha_tag_first_seen,omitempty"`
+	OTAAlphaTagLastSeen  *time.Time `json:"ota_alpha_tag_last_seen,omitempty"`
+	CallCount            *int       `json:"call_count,omitempty"`
+	RelevanceScore       *int       `json:"relevance_score,omitempty"`
 }
 
 func unitRowToAPI(r sqlcdb.GetUnitByCompositeRow) UnitAPI {
 	u := UnitAPI{
-		SystemID:       r.SystemID,
-		SystemName:     r.SystemName,
-		Sysid:          r.Sysid,
-		UnitID:         r.UnitID,
-		AlphaTag:       r.AlphaTag,
-		AlphaTagSource: r.AlphaTagSource,
-		LastEventType:  r.LastEventType,
-		LastEventTgTag: r.LastEventTgTag,
+		SystemID:         r.SystemID,
+		SystemName:       r.SystemName,
+		Sysid:            r.Sysid,
+		UnitID:           r.UnitID,
+		AlphaTag:         r.AlphaTag,
+		AlphaTagSource:   r.AlphaTagSource,
+		LastEventType:    r.LastEventType,
+		LastEventTgTag:   r.LastEventTgTag,
+		RecorderAlphaTag: r.RecorderAlphaTag,
+		OTAAlphaTag:      r.OtaAlphaTag,
 	}
 	if r.FirstSeen.Valid {
 		u.FirstSeen = &r.FirstSeen.Time
@@ -63,6 +71,15 @@ func unitRowToAPI(r sqlcdb.GetUnitByCompositeRow) UnitAPI {
 	if r.LastEventTgid != nil {
 		v := int(*r.LastEventTgid)
 		u.LastEventTgid = &v
+	}
+	if r.RecorderAlphaTagSeen.Valid {
+		u.RecorderAlphaTagSeen = &r.RecorderAlphaTagSeen.Time
+	}
+	if r.OtaAlphaTagFirstSeen.Valid {
+		u.OTAAlphaTagFirstSeen = &r.OtaAlphaTagFirstSeen.Time
+	}
+	if r.OtaAlphaTagLastSeen.Valid {
+		u.OTAAlphaTagLastSeen = &r.OtaAlphaTagLastSeen.Time
 	}
 	return u
 }
@@ -99,7 +116,9 @@ func (db *DB) ListUnits(ctx context.Context, filter UnitFilter) ([]UnitAPI, int,
 			u.unit_id, COALESCE(u.alpha_tag, ''), COALESCE(u.alpha_tag_source, ''),
 			u.first_seen, u.last_seen,
 			u.last_event_type, u.last_event_time, u.last_event_tgid,
-			COALESCE(tg.alpha_tag, '')
+			COALESCE(tg.alpha_tag, ''),
+			COALESCE(u.recorder_alpha_tag, ''), u.recorder_alpha_tag_seen,
+			COALESCE(u.ota_alpha_tag, ''), u.ota_alpha_tag_first_seen, u.ota_alpha_tag_last_seen
 		%s %s
 		ORDER BY %s
 		LIMIT $5 OFFSET $6
@@ -120,6 +139,8 @@ func (db *DB) ListUnits(ctx context.Context, filter UnitFilter) ([]UnitAPI, int,
 			&u.FirstSeen, &u.LastSeen,
 			&u.LastEventType, &u.LastEventTime, &u.LastEventTgid,
 			&u.LastEventTgTag,
+			&u.RecorderAlphaTag, &u.RecorderAlphaTagSeen,
+			&u.OTAAlphaTag, &u.OTAAlphaTagFirstSeen, &u.OTAAlphaTagLastSeen,
 		); err != nil {
 			return nil, 0, err
 		}
@@ -262,18 +283,29 @@ func (db *DB) ImportUnitTags(ctx context.Context, systemID int, tags []UnitTag) 
 	return tag.RowsAffected(), nil
 }
 
+// UnitUpsertResult is the unit's stored tag state after UpsertUnit.
+type UnitUpsertResult struct {
+	AlphaTag    string // effective alpha_tag (manual > csv > mqtt priority)
+	OTAAlphaTag string // latest known over-the-air alias ("" if never reported)
+}
+
 // UpsertUnit inserts or updates a unit, never overwriting good data with empty strings.
-// Returns the effective alpha_tag from the database (respects manual > csv > mqtt priority).
-func (db *DB) UpsertUnit(ctx context.Context, systemID, unitID int, alphaTag, eventType string, eventTime time.Time, tgid int) (string, error) {
+// alphaTag is the tag the recorder reported: it feeds alpha_tag (subject to the
+// manual > csv > mqtt priority) and is always recorded as recorder_alpha_tag.
+// otaAlphaTag is the raw over-the-air alias, if the plugin sent one; it only
+// updates ota_alpha_tag. Empty strings leave the stored values untouched.
+func (db *DB) UpsertUnit(ctx context.Context, systemID, unitID int, alphaTag, otaAlphaTag, eventType string, eventTime time.Time, tgid int) (UnitUpsertResult, error) {
 	tgid32 := int32(tgid)
-	return db.Q.UpsertUnit(ctx, sqlcdb.UpsertUnitParams{
-		SystemID:  systemID,
-		UnitID:    unitID,
-		AlphaTag:  &alphaTag,
-		EventType: &eventType,
-		EventTime: pgtype.Timestamptz{Time: eventTime, Valid: true},
-		Tgid:      &tgid32,
+	row, err := db.Q.UpsertUnit(ctx, sqlcdb.UpsertUnitParams{
+		SystemID:    systemID,
+		UnitID:      unitID,
+		AlphaTag:    &alphaTag,
+		OtaAlphaTag: otaAlphaTag,
+		EventType:   &eventType,
+		EventTime:   pgtype.Timestamptz{Time: eventTime, Valid: true},
+		Tgid:        &tgid32,
 	})
+	return UnitUpsertResult{AlphaTag: row.AlphaTag, OTAAlphaTag: row.OtaAlphaTag}, err
 }
 
 // UnitExport contains fields needed for export (no stats, no event details).
@@ -284,6 +316,12 @@ type UnitExport struct {
 	AlphaTagSource string
 	FirstSeen      *time.Time
 	LastSeen       *time.Time
+
+	RecorderAlphaTag     string
+	RecorderAlphaTagSeen *time.Time
+	OTAAlphaTag          string
+	OTAAlphaTagFirstSeen *time.Time
+	OTAAlphaTagLastSeen  *time.Time
 }
 
 // ExportUnits returns all units for the given systems, suitable for export.
@@ -295,13 +333,16 @@ func (db *DB) ExportUnits(ctx context.Context, systemIDs []int) ([]UnitExport, e
 	if hasSource {
 		query = `SELECT system_id, unit_id,
 			COALESCE(alpha_tag, ''), COALESCE(alpha_tag_source, ''),
-			first_seen, last_seen
+			first_seen, last_seen,
+			COALESCE(recorder_alpha_tag, ''), recorder_alpha_tag_seen,
+			COALESCE(ota_alpha_tag, ''), ota_alpha_tag_first_seen, ota_alpha_tag_last_seen
 			FROM units WHERE ($1::int[] IS NULL OR system_id = ANY($1))
 			ORDER BY system_id, unit_id`
 	} else {
 		query = `SELECT system_id, unit_id,
 			COALESCE(alpha_tag, ''), '',
-			first_seen, last_seen
+			first_seen, last_seen,
+			'', NULL::timestamptz, '', NULL::timestamptz, NULL::timestamptz
 			FROM units WHERE ($1::int[] IS NULL OR system_id = ANY($1))
 			ORDER BY system_id, unit_id`
 	}
@@ -319,6 +360,8 @@ func (db *DB) ExportUnits(ctx context.Context, systemIDs []int) ([]UnitExport, e
 			&u.SystemID, &u.UnitID,
 			&u.AlphaTag, &u.AlphaTagSource,
 			&u.FirstSeen, &u.LastSeen,
+			&u.RecorderAlphaTag, &u.RecorderAlphaTagSeen,
+			&u.OTAAlphaTag, &u.OTAAlphaTagFirstSeen, &u.OTAAlphaTagLastSeen,
 		); err != nil {
 			return nil, err
 		}
@@ -327,21 +370,61 @@ func (db *DB) ExportUnits(ctx context.Context, systemIDs []int) ([]UnitExport, e
 	return result, rows.Err()
 }
 
+// unitObservationMergeSQL is the ON CONFLICT DO UPDATE assignment list that
+// merges an incoming row's recorder/OTA tag observations (EXCLUDED, with empty
+// tags passed as NULL) into the stored unit. Archive import and system merge
+// use it; their incoming rows carry whole observation windows, not one event.
+//   - recorder_alpha_tag: the most recently seen tag wins.
+//   - Same OTA alias: last_seen moves later. first_seen moves earlier only when
+//     the incoming window overlaps the stored one, so an older, separate run
+//     of the alias cannot stretch back across a change to another alias.
+//   - Different OTA alias: the incoming alias and its window replace the
+//     stored ones, unless the incoming alias was last seen before the stored one.
+const unitObservationMergeSQL = `
+	recorder_alpha_tag = CASE
+		WHEN EXCLUDED.recorder_alpha_tag IS NOT NULL AND (units.recorder_alpha_tag IS NULL
+			OR units.recorder_alpha_tag_seen IS NULL OR EXCLUDED.recorder_alpha_tag_seen >= units.recorder_alpha_tag_seen)
+		THEN EXCLUDED.recorder_alpha_tag ELSE units.recorder_alpha_tag END,
+	recorder_alpha_tag_seen = CASE WHEN EXCLUDED.recorder_alpha_tag IS NOT NULL
+		THEN GREATEST(units.recorder_alpha_tag_seen, EXCLUDED.recorder_alpha_tag_seen) ELSE units.recorder_alpha_tag_seen END,
+	ota_alpha_tag = CASE
+		WHEN EXCLUDED.ota_alpha_tag IS NULL THEN units.ota_alpha_tag
+		WHEN units.ota_alpha_tag IS NULL OR units.ota_alpha_tag = EXCLUDED.ota_alpha_tag
+			OR units.ota_alpha_tag_last_seen IS NULL OR EXCLUDED.ota_alpha_tag_last_seen >= units.ota_alpha_tag_last_seen
+		THEN EXCLUDED.ota_alpha_tag ELSE units.ota_alpha_tag END,
+	ota_alpha_tag_first_seen = CASE
+		WHEN EXCLUDED.ota_alpha_tag IS NULL THEN units.ota_alpha_tag_first_seen
+		WHEN units.ota_alpha_tag = EXCLUDED.ota_alpha_tag THEN CASE
+			WHEN EXCLUDED.ota_alpha_tag_last_seen >= units.ota_alpha_tag_first_seen
+			THEN LEAST(units.ota_alpha_tag_first_seen, EXCLUDED.ota_alpha_tag_first_seen)
+			ELSE COALESCE(units.ota_alpha_tag_first_seen, EXCLUDED.ota_alpha_tag_first_seen) END
+		WHEN units.ota_alpha_tag IS NULL OR units.ota_alpha_tag_last_seen IS NULL
+			OR EXCLUDED.ota_alpha_tag_last_seen >= units.ota_alpha_tag_last_seen THEN EXCLUDED.ota_alpha_tag_first_seen
+		ELSE units.ota_alpha_tag_first_seen END,
+	ota_alpha_tag_last_seen = CASE
+		WHEN EXCLUDED.ota_alpha_tag IS NULL THEN units.ota_alpha_tag_last_seen
+		WHEN units.ota_alpha_tag = EXCLUDED.ota_alpha_tag
+		THEN GREATEST(units.ota_alpha_tag_last_seen, EXCLUDED.ota_alpha_tag_last_seen)
+		WHEN units.ota_alpha_tag IS NULL OR units.ota_alpha_tag_last_seen IS NULL
+			OR EXCLUDED.ota_alpha_tag_last_seen >= units.ota_alpha_tag_last_seen THEN EXCLUDED.ota_alpha_tag_last_seen
+		ELSE units.ota_alpha_tag_last_seen END`
+
 // ImportUpsertUnit upserts a unit from an export archive.
 // Respects alpha_tag_source priority: manual > csv > mqtt. An empty archive tag
 // never blanks an existing one, and an archive tag of lower priority (or with no
 // source, i.e. MQTT-discovered) still fills an empty existing tag.
-func (db *DB) ImportUpsertUnit(ctx context.Context, systemID, unitID int,
-	alphaTag, alphaTagSource string, firstSeen, lastSeen *time.Time) error {
-
+// Recorder/OTA tag observations merge as described on unitObservationMergeSQL.
+func (db *DB) ImportUpsertUnit(ctx context.Context, u UnitExport) error {
 	hasSource := db.columnExists(ctx, "units", "alpha_tag_source")
 
 	if hasSource {
 		// NULLIF($4, ''): rows exported without a source must insert NULL, not ''
 		// (chk_units_alpha_tag_source rejects '').
 		_, err := db.Pool.Exec(ctx, `
-			INSERT INTO units (system_id, unit_id, alpha_tag, alpha_tag_source, first_seen, last_seen)
-			VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6)
+			INSERT INTO units (system_id, unit_id, alpha_tag, alpha_tag_source, first_seen, last_seen,
+				recorder_alpha_tag, recorder_alpha_tag_seen,
+				ota_alpha_tag, ota_alpha_tag_first_seen, ota_alpha_tag_last_seen)
+			VALUES ($1, $2, $3, NULLIF($4::text, ''), $5, $6, NULLIF($7::text, ''), $8, NULLIF($9::text, ''), $10, $11)
 			ON CONFLICT (system_id, unit_id) DO UPDATE SET
 				alpha_tag = CASE
 					WHEN NULLIF($3, '') IS NULL THEN units.alpha_tag
@@ -358,8 +441,10 @@ func (db *DB) ImportUpsertUnit(ctx context.Context, systemID, unitID int,
 					ELSE units.alpha_tag_source
 				END,
 				first_seen = LEAST(units.first_seen, $5),
-				last_seen  = GREATEST(units.last_seen, $6)
-		`, systemID, unitID, alphaTag, alphaTagSource, firstSeen, lastSeen)
+				last_seen  = GREATEST(units.last_seen, $6),`+unitObservationMergeSQL+`
+		`, u.SystemID, u.UnitID, u.AlphaTag, u.AlphaTagSource, u.FirstSeen, u.LastSeen,
+			u.RecorderAlphaTag, u.RecorderAlphaTagSeen,
+			u.OTAAlphaTag, u.OTAAlphaTagFirstSeen, u.OTAAlphaTagLastSeen)
 		return err
 	}
 
@@ -371,6 +456,6 @@ func (db *DB) ImportUpsertUnit(ctx context.Context, systemID, unitID int,
 			alpha_tag  = COALESCE(NULLIF($3, ''), units.alpha_tag),
 			first_seen = LEAST(units.first_seen, $4),
 			last_seen  = GREATEST(units.last_seen, $5)
-	`, systemID, unitID, alphaTag, firstSeen, lastSeen)
+	`, u.SystemID, u.UnitID, u.AlphaTag, u.FirstSeen, u.LastSeen)
 	return err
 }

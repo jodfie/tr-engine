@@ -19,6 +19,7 @@ type CallData struct {
 	Freq                 float64 `json:"freq"`
 	Unit                 int     `json:"unit"`
 	UnitAlphaTag         string  `json:"unit_alpha_tag"`
+	UnitAlphaTagOTA      string  `json:"unit_alpha_tag_ota,omitempty"` // raw over-the-air alias (optional)
 	Talkgroup            int     `json:"talkgroup"`
 	TalkgroupAlphaTag    string  `json:"talkgroup_alpha_tag"`
 	TalkgroupDescription string  `json:"talkgroup_description"`
@@ -126,6 +127,7 @@ type SrcItem struct {
 	Emergency    int     `json:"emergency"`
 	SignalSystem string  `json:"signal_system"`
 	Tag          string  `json:"tag"`
+	TagOTA       string  `json:"tag_ota,omitempty"` // raw over-the-air alias (trunk-recorder 5.2+)
 }
 
 // AudioCallData is the "call" field in an audio message.
@@ -148,6 +150,7 @@ type UnitEventData struct {
 	SysName              string  `json:"sys_name"`
 	Unit                 int     `json:"unit"`
 	UnitAlphaTag         string  `json:"unit_alpha_tag"`
+	UnitAlphaTagOTA      string  `json:"unit_alpha_tag_ota,omitempty"` // raw over-the-air alias (optional)
 	Talkgroup            int     `json:"talkgroup"`
 	TalkgroupAlphaTag    string  `json:"talkgroup_alpha_tag"`
 	TalkgroupDescription string  `json:"talkgroup_description"`

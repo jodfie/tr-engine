@@ -222,6 +222,17 @@ CREATE TABLE units (
     last_event_type   text,
     last_event_time   timestamptz,
     last_event_tgid   int,
+    -- Tag observations kept alongside alpha_tag. Never affect alpha_tag or
+    -- its manual > csv > mqtt priority; purely informational.
+    -- recorder_alpha_tag: latest non-empty unit tag trunk-recorder reported
+    --   (its own resolved tag: unitTagsFile entry, else decoded OTA alias).
+    -- ota_alpha_tag: latest raw over-the-air alias sent explicitly by the
+    --   plugin (unit_alpha_tag_ota). first_seen resets when the value changes.
+    recorder_alpha_tag       text,
+    recorder_alpha_tag_seen  timestamptz,
+    ota_alpha_tag            text,
+    ota_alpha_tag_first_seen timestamptz,
+    ota_alpha_tag_last_seen  timestamptz,
     created_at        timestamptz  NOT NULL DEFAULT now(),
     updated_at        timestamptz  NOT NULL DEFAULT now(),
 

@@ -457,9 +457,20 @@ func importUnits(ctx context.Context, db *database.DB, data []byte, sysMap map[s
 		}
 
 		if !dryRun {
-			if err := db.ImportUpsertUnit(ctx, systemID, rec.UnitID,
-				rec.AlphaTag, rec.AlphaTagSource, rec.FirstSeen, rec.LastSeen,
-			); err != nil {
+			if err := db.ImportUpsertUnit(ctx, database.UnitExport{
+				SystemID:       systemID,
+				UnitID:         rec.UnitID,
+				AlphaTag:       rec.AlphaTag,
+				AlphaTagSource: rec.AlphaTagSource,
+				FirstSeen:      rec.FirstSeen,
+				LastSeen:       rec.LastSeen,
+
+				RecorderAlphaTag:     rec.RecorderAlphaTag,
+				RecorderAlphaTagSeen: rec.RecorderAlphaTagSeen,
+				OTAAlphaTag:          rec.OTAAlphaTag,
+				OTAAlphaTagFirstSeen: rec.OTAAlphaTagFirstSeen,
+				OTAAlphaTagLastSeen:  rec.OTAAlphaTagLastSeen,
+			}); err != nil {
 				log.Warn().Err(err).Int("unit_id", rec.UnitID).Msg("failed to import unit")
 				result.Units.Skip++
 				continue

@@ -62,12 +62,12 @@ func (p *Pipeline) handleCallStart(payload []byte) error {
 	// Upsert unit — capture effective tag from DB
 	effectiveUnitTag := call.UnitAlphaTag
 	if call.Unit > 0 {
-		if dbTag, err := p.db.UpsertUnit(ctx, identity.SystemID, call.Unit,
-			call.UnitAlphaTag, "call_start", startTime, call.Talkgroup,
+		if res, err := p.db.UpsertUnit(ctx, identity.SystemID, call.Unit,
+			call.UnitAlphaTag, call.UnitAlphaTagOTA, "call_start", startTime, call.Talkgroup,
 		); err != nil {
 			p.log.Warn().Err(err).Int("unit", call.Unit).Msg("failed to upsert unit")
-		} else if dbTag != "" {
-			effectiveUnitTag = dbTag
+		} else if res.AlphaTag != "" {
+			effectiveUnitTag = res.AlphaTag
 		}
 	}
 
@@ -333,10 +333,10 @@ func (p *Pipeline) handleCallEnd(payload []byte) error {
 			call.TalkgroupAlphaTag, call.TalkgroupTag, call.TalkgroupGroup, call.TalkgroupDescription, startTime)
 	}
 	if idErr == nil && call.Unit > 0 {
-		if dbTag, upsertErr := p.db.UpsertUnit(ctx, identity.SystemID, call.Unit,
-			call.UnitAlphaTag, "call_end", startTime, call.Talkgroup,
-		); upsertErr == nil && dbTag != "" {
-			effectiveUnitTag = dbTag
+		if res, upsertErr := p.db.UpsertUnit(ctx, identity.SystemID, call.Unit,
+			call.UnitAlphaTag, call.UnitAlphaTagOTA, "call_end", startTime, call.Talkgroup,
+		); upsertErr == nil && res.AlphaTag != "" {
+			effectiveUnitTag = res.AlphaTag
 		}
 	}
 
@@ -474,10 +474,10 @@ func (p *Pipeline) handleCallStartFromEnd(ctx context.Context, msg *CallEndMsg) 
 	// Upsert unit — capture effective tag from DB
 	effectiveUnitTag := call.UnitAlphaTag
 	if call.Unit > 0 {
-		if dbTag, upsertErr := p.db.UpsertUnit(ctx, identity.SystemID, call.Unit,
-			call.UnitAlphaTag, "call_end", startTime, call.Talkgroup,
-		); upsertErr == nil && dbTag != "" {
-			effectiveUnitTag = dbTag
+		if res, upsertErr := p.db.UpsertUnit(ctx, identity.SystemID, call.Unit,
+			call.UnitAlphaTag, call.UnitAlphaTagOTA, "call_end", startTime, call.Talkgroup,
+		); upsertErr == nil && res.AlphaTag != "" {
+			effectiveUnitTag = res.AlphaTag
 		}
 	}
 

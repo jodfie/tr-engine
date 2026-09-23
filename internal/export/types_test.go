@@ -74,6 +74,57 @@ func TestUnitRecord_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestUnitRecord_TagObservationsRoundTrip(t *testing.T) {
+	first := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	last := first.Add(48 * time.Hour)
+	rec := UnitRecord{
+		V: 1, SystemRef: SystemRef{Sysid: "348", Wacn: "BEE00"},
+		UnitID: 338, AlphaTag: "FRNSW - P 338 - Jindabyne", AlphaTagSource: "manual",
+		RecorderAlphaTag: "P338 FF1", RecorderAlphaTagSeen: &last,
+		OTAAlphaTag: "P338 FF1", OTAAlphaTagFirstSeen: &first, OTAAlphaTagLastSeen: &last,
+	}
+	data, _ := json.Marshal(rec)
+	var decoded UnitRecord
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.AlphaTag != "FRNSW - P 338 - Jindabyne" || decoded.OTAAlphaTag != "P338 FF1" || decoded.RecorderAlphaTag != "P338 FF1" {
+		t.Errorf("tag observations not preserved: %+v", decoded)
+	}
+	if decoded.OTAAlphaTagFirstSeen == nil || !decoded.OTAAlphaTagFirstSeen.Equal(first) {
+		t.Errorf("ota_alpha_tag_first_seen = %v, want %v", decoded.OTAAlphaTagFirstSeen, first)
+	}
+	if decoded.OTAAlphaTagLastSeen == nil || !decoded.OTAAlphaTagLastSeen.Equal(last) {
+		t.Errorf("ota_alpha_tag_last_seen = %v, want %v", decoded.OTAAlphaTagLastSeen, last)
+	}
+	if decoded.RecorderAlphaTagSeen == nil || !decoded.RecorderAlphaTagSeen.Equal(last) {
+		t.Errorf("recorder_alpha_tag_seen = %v, want %v", decoded.RecorderAlphaTagSeen, last)
+	}
+}
+
+func TestUnitRecord_OlderArchiveWithoutTagObservations(t *testing.T) {
+	// Archives written before these fields existed must still import (as "unknown").
+	line := []byte(`{"_v":1,"system_ref":{"sysid":"348","wacn":"BEE00"},"unit_id":12345,"alpha_tag":"Engine 1","alpha_tag_source":"csv"}`)
+	var decoded UnitRecord
+	if err := json.Unmarshal(line, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.OTAAlphaTag != "" || decoded.RecorderAlphaTag != "" ||
+		decoded.OTAAlphaTagFirstSeen != nil || decoded.OTAAlphaTagLastSeen != nil || decoded.RecorderAlphaTagSeen != nil {
+		t.Errorf("expected empty tag observations, got %+v", decoded)
+	}
+
+	// And a record without observations must not emit the keys.
+	data, _ := json.Marshal(UnitRecord{V: 1, UnitID: 1})
+	var raw map[string]any
+	json.Unmarshal(data, &raw)
+	for _, k := range []string{"recorder_alpha_tag", "recorder_alpha_tag_seen", "ota_alpha_tag", "ota_alpha_tag_first_seen", "ota_alpha_tag_last_seen"} {
+		if _, ok := raw[k]; ok {
+			t.Errorf("unexpected key %q in %s", k, data)
+		}
+	}
+}
+
 func TestSystemRecordP25_OmitsEmptyFields(t *testing.T) {
 	rec := SystemRecord{V: 1, Type: "p25", Name: "Test", Sysid: "348", Wacn: "BEE00"}
 	data, _ := json.Marshal(rec)
