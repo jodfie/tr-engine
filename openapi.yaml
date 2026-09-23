@@ -4899,7 +4899,21 @@ components:
           description: |
             Unit-attributed word timestamps and segments. The `words` array
             contains every word with timing and the radio unit that said it.
-            The `segments` array groups consecutive words by the same unit.
+            The `segments` array groups consecutive words by the same unit; a
+            change of diarization `speaker` does not start a new segment.
+
+            Both arrays are empty when the STT model returns no timestamps
+            (e.g. OpenAI `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`,
+            `gpt-transcribe`, or the IMBE provider). When the model returns
+            only segment-level timestamps (OpenAI `gpt-4o-transcribe-diarize`,
+            or DeepInfra without word timestamps), word timings are
+            approximated by spreading each segment's words evenly across it.
+            Within a diarized speaker segment, words attributed to a unit
+            whose transmissions overlap the segment by less than 0.5 s in
+            total are moved to the unit the segment overlaps most. Words
+            already on that unit stay there even when its overlap is under
+            0.5 s (e.g. a short "Copy."). A segment that overlaps no
+            transmission keeps per-word attribution (nearest transmission).
           properties:
             words:
               type: array
@@ -4934,6 +4948,13 @@ components:
           type: string
           description: Unit alpha tag
           example: "Medic 83"
+        speaker:
+          type: string
+          description: |
+            Speaker label from a diarizing STT model (OpenAI
+            `gpt-4o-transcribe-diarize` labels speakers `A`, `B`, ...).
+            Omitted when the model does not diarize.
+          example: "A"
 
     TranscriptionSegment:
       type: object
@@ -4947,6 +4968,13 @@ components:
         src_tag:
           type: string
           example: "Medic 83"
+        speaker:
+          type: string
+          description: |
+            Diarization speaker label, present only when every word in the
+            segment has the same label. Omitted when the STT model does not
+            diarize or the segment mixes speakers (see the words' `speaker`).
+          example: "A"
         start:
           type: number
           example: 0.12
@@ -5042,6 +5070,9 @@ components:
               src_tag:
                 type: string
                 description: Unit alpha tag.
+              speaker:
+                type: string
+                description: Diarization speaker label, present only when every word in the segment has the same label; omitted when the STT model does not diarize or the segment mixes speakers.
               start:
                 type: number
                 description: Segment start in seconds.

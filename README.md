@@ -208,7 +208,7 @@ Pluggable speech-to-text with four providers:
 
 | Provider | Config | Notes |
 |----------|--------|-------|
-| Whisper | `STT_PROVIDER=whisper` + `WHISPER_URL` | Self-hosted or cloud Whisper-compatible API |
+| Whisper | `STT_PROVIDER=whisper` + `WHISPER_URL` | Self-hosted or cloud Whisper-compatible API, including OpenAI `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`, `gpt-transcribe`, and `gpt-4o-transcribe-diarize` (see `docs/docker.md`) |
 | ElevenLabs | `STT_PROVIDER=elevenlabs` + `ELEVENLABS_API_KEY` | ElevenLabs Scribe API |
 | DeepInfra | `STT_PROVIDER=deepinfra` + `DEEPINFRA_STT_API_KEY` | Hosted Whisper models |
 | IMBE ASR | `STT_PROVIDER=imbe` + `IMBE_ASR_URL` | Transcribes directly from P25 IMBE codec frames via DVCF |

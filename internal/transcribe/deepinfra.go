@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 )
 
@@ -151,21 +150,7 @@ func (di *DeepInfraClient) Transcribe(ctx context.Context, audioPath string, opt
 func wordsFromSegments(segments []deepInfraSegment) []Word {
 	var words []Word
 	for _, seg := range segments {
-		text := strings.TrimSpace(seg.Text)
-		if text == "" {
-			continue
-		}
-		tokens := strings.Fields(text)
-		n := len(tokens)
-		dur := seg.End - seg.Start
-		wordDur := dur / float64(n)
-		for i, tok := range tokens {
-			words = append(words, Word{
-				Word:  tok,
-				Start: seg.Start + float64(i)*wordDur,
-				End:   seg.Start + float64(i+1)*wordDur,
-			})
-		}
+		words = append(words, interpolateWords(seg.Text, seg.Start, seg.End)...)
 	}
 	return words
 }

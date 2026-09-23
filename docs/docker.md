@@ -259,7 +259,32 @@ TRANSCRIBE_WORKERS=2
 # WHISPER_PROMPT=Police dispatch. Engine 7, Medic 23. 10-4, copy, en route.
 ```
 
-Works with any OpenAI-compatible API. For OpenAI, use `https://api.openai.com/v1/audio/transcriptions` and model `whisper-1`.
+Works with any OpenAI-compatible API.
+
+**OpenAI:**
+
+```bash
+STT_PROVIDER=whisper
+WHISPER_URL=https://api.openai.com/v1/audio/transcriptions
+WHISPER_API_KEY=sk-your_api_key_here
+WHISPER_MODEL=gpt-4o-transcribe
+WHISPER_LANGUAGE=en
+TRANSCRIBE_WORKERS=2
+# Optional — local terms, callsigns, place names. Supported by gpt-4o(-mini)-transcribe
+# and gpt-transcribe; not by gpt-4o-transcribe-diarize.
+# WHISPER_PROMPT=Police dispatch. Engine 7, Medic 23. 10-4, copy, en route.
+```
+
+tr-engine picks the request format from the model name (dated snapshots and an `openai/` prefix are recognized):
+
+| `WHISPER_MODEL` | What you get |
+|-----------------|--------------|
+| `whisper-1` | Word timestamps; each word attributed to the radio unit that said it |
+| `gpt-4o-transcribe`, `gpt-4o-mini-transcribe` | Text only — no timestamps, so no per-unit attribution |
+| `gpt-transcribe` | Text only; `WHISPER_HOTWORDS` are sent as OpenAI `keywords` |
+| `gpt-4o-transcribe-diarize` | Speaker-labelled segments (`A`, `B`, …); word timings are approximated within each segment and still attributed to units. `WHISPER_PROMPT` is not supported by this model |
+
+For the `gpt-*` models, the Whisper-server-only options (`WHISPER_BEAM_SIZE`, the anti-hallucination settings, `WHISPER_VAD_FILTER`, and `WHISPER_HOTWORDS` except on `gpt-transcribe`) are not sent; tr-engine logs a warning once for each one that is set.
 
 **ElevenLabs:**
 
