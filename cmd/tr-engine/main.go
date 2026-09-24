@@ -22,6 +22,7 @@ import (
 	"github.com/snarg/tr-engine/internal/storage"
 	"github.com/snarg/tr-engine/internal/transcribe"
 	"github.com/snarg/tr-engine/internal/trconfig"
+	"github.com/snarg/tr-engine/internal/unittags"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -374,6 +375,22 @@ func main() {
 			log.Fatal().Err(err).Msg("failed to start file watcher")
 		}
 		log.Info().Str("watch_dir", cfg.WatchDir).Str("instance_id", cfg.WatchInstanceID).Msg("file watcher started")
+	}
+
+	// Unit tag suggestion scanner (opt-in). Walks transcriptions from a
+	// persisted cursor — enabling it backfills history — and queues candidate
+	// unit alpha tags for review. Never modifies units itself.
+	if cfg.UnitTagSuggestions {
+		scanner := unittags.NewScanner(db, unittags.Options{
+			Interval: cfg.UnitTagSuggestionsInterval,
+			Log:      log.With().Str("component", "unittags").Logger(),
+		})
+		scanner.Start(ctx)
+		defer scanner.Stop()
+		log.Info().
+			Int("min_calls", cfg.UnitTagSuggestionsMinCalls).
+			Float64("min_share", cfg.UnitTagSuggestionsMinShare).
+			Msg("unit tag suggestions enabled")
 	}
 
 	// Start live audio streaming if configured

@@ -166,6 +166,59 @@ func TestStreamConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestUnitTagSuggestionsConfig(t *testing.T) {
+	t.Setenv("DATABASE_URL", "postgres://localhost/test")
+	t.Setenv("MQTT_BROKER_URL", "tcp://localhost:1883")
+
+	cfg, err := Load(Overrides{EnvFile: "nonexistent.env"})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.UnitTagSuggestions {
+		t.Error("UnitTagSuggestions = true, want false (opt-in)")
+	}
+	if cfg.UnitTagSuggestionsMinCalls != 3 || cfg.UnitTagSuggestionsMinShare != 0.2 ||
+		cfg.UnitTagSuggestionsInterval != 60*time.Second {
+		t.Errorf("defaults = %d/%g/%v, want 3/0.2/60s", cfg.UnitTagSuggestionsMinCalls,
+			cfg.UnitTagSuggestionsMinShare, cfg.UnitTagSuggestionsInterval)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Errorf("Validate defaults: %v", err)
+	}
+
+	t.Setenv("UNIT_TAG_SUGGESTIONS", "true")
+	t.Setenv("UNIT_TAG_SUGGESTIONS_MIN_CALLS", "5")
+	t.Setenv("UNIT_TAG_SUGGESTIONS_MIN_SHARE", "0.5")
+	t.Setenv("UNIT_TAG_SUGGESTIONS_INTERVAL", "2m")
+	cfg, err = Load(Overrides{EnvFile: "nonexistent.env"})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !cfg.UnitTagSuggestions || cfg.UnitTagSuggestionsMinCalls != 5 ||
+		cfg.UnitTagSuggestionsMinShare != 0.5 || cfg.UnitTagSuggestionsInterval != 2*time.Minute {
+		t.Errorf("parsed = %v/%d/%g/%v", cfg.UnitTagSuggestions, cfg.UnitTagSuggestionsMinCalls,
+			cfg.UnitTagSuggestionsMinShare, cfg.UnitTagSuggestionsInterval)
+	}
+
+	for _, tc := range []struct{ key, val string }{
+		{"UNIT_TAG_SUGGESTIONS_MIN_CALLS", "0"},
+		{"UNIT_TAG_SUGGESTIONS_MIN_SHARE", "1.5"},
+		{"UNIT_TAG_SUGGESTIONS_MIN_SHARE", "-0.1"},
+		{"UNIT_TAG_SUGGESTIONS_INTERVAL", "0s"},
+	} {
+		t.Run(tc.key+"="+tc.val, func(t *testing.T) {
+			t.Setenv(tc.key, tc.val)
+			cfg, err := Load(Overrides{EnvFile: "nonexistent.env"})
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if err := cfg.Validate(); err == nil {
+				t.Error("Validate accepted an invalid value")
+			}
+		})
+	}
+}
+
 func TestLoad_NoAutoGenerateAuthToken(t *testing.T) {
 	t.Setenv("DATABASE_URL", "postgres://localhost/test")
 	t.Setenv("MQTT_BROKER_URL", "tcp://localhost:1883")

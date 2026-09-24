@@ -56,6 +56,12 @@ func sanitizeConfig(cfg *config.Config) map[string]any {
 		// P25 merging
 		"MergeP25Systems": cfg.MergeP25Systems,
 
+		// Unit tag suggestions
+		"UnitTagSuggestions":         cfg.UnitTagSuggestions,
+		"UnitTagSuggestionsMinCalls": cfg.UnitTagSuggestionsMinCalls,
+		"UnitTagSuggestionsMinShare": cfg.UnitTagSuggestionsMinShare,
+		"UnitTagSuggestionsInterval": cfg.UnitTagSuggestionsInterval.String(),
+
 		// HTTP server
 		"HTTPAddr":     cfg.HTTPAddr,
 		"ReadTimeout":  cfg.ReadTimeout.String(),

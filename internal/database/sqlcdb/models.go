@@ -213,6 +213,12 @@ type RecorderSnapshot struct {
 	Time         pgtype.Timestamptz
 }
 
+type ScanCursor struct {
+	Name      string
+	LastID    int64
+	UpdatedAt pgtype.Timestamptz
+}
+
 type Site struct {
 	SiteID        int
 	SystemID      int
@@ -369,4 +375,27 @@ type UnitEvent struct {
 	SysName              *string
 	MetadataJson         []byte
 	Incidentdata         []byte
+}
+
+type UnitTagSuggestion struct {
+	ID                int64
+	SystemID          int
+	UnitID            int
+	TagKey            string
+	ProposedTag       string
+	Status            string
+	Occurrences       int
+	CallCount         int
+	MatchesCurrentTag bool
+	TagAtSighting     *string
+	FirstSeen         pgtype.Timestamptz
+	LastSeen          pgtype.Timestamptz
+	Evidence          []byte
+	AppliedTag        *string
+	PreviousTag       *string
+	PreviousTagSource *string
+	DecidedAt         pgtype.Timestamptz
+	DecidedBy         *string
+	CreatedAt         pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
 }

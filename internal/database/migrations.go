@@ -165,6 +165,46 @@ ALTER TABLE systems ADD CONSTRAINT systems_system_type_check
 				'recorder_alpha_tag', 'recorder_alpha_tag_seen',
 				'ota_alpha_tag', 'ota_alpha_tag_first_seen', 'ota_alpha_tag_last_seen')) = 5`,
 	},
+	{
+		name: "create unit_tag_suggestions and scan_cursors tables",
+		sql: `CREATE TABLE IF NOT EXISTS unit_tag_suggestions (
+			id                   bigserial    PRIMARY KEY,
+			system_id            int          NOT NULL REFERENCES systems (system_id),
+			unit_id              int          NOT NULL,
+			tag_key              text         NOT NULL,
+			proposed_tag         text         NOT NULL,
+			status               text         NOT NULL DEFAULT 'pending'
+			                     CHECK (status IN ('pending', 'approved', 'dismissed')),
+			occurrences          int          NOT NULL DEFAULT 0,
+			call_count           int          NOT NULL DEFAULT 0,
+			matches_current_tag  boolean      NOT NULL DEFAULT false,
+			tag_at_sighting      text,
+			first_seen           timestamptz  NOT NULL,
+			last_seen            timestamptz  NOT NULL,
+			evidence             jsonb        NOT NULL DEFAULT '[]'::jsonb,
+			applied_tag          text,
+			previous_tag         text,
+			previous_tag_source  text,
+			decided_at           timestamptz,
+			decided_by           text,
+			created_at           timestamptz  NOT NULL DEFAULT now(),
+			updated_at           timestamptz  NOT NULL DEFAULT now(),
+			UNIQUE (system_id, unit_id, tag_key)
+		);
+		ALTER TABLE unit_tag_suggestions ADD COLUMN IF NOT EXISTS tag_at_sighting text;
+		DROP TRIGGER IF EXISTS trg_unit_tag_suggestions_updated_at ON unit_tag_suggestions;
+		CREATE TRIGGER trg_unit_tag_suggestions_updated_at
+			BEFORE UPDATE ON unit_tag_suggestions FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+		CREATE TABLE IF NOT EXISTS scan_cursors (
+			name        text         PRIMARY KEY,
+			last_id     bigint       NOT NULL DEFAULT 0,
+			updated_at  timestamptz  NOT NULL DEFAULT now()
+		)`,
+		check: `SELECT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'unit_tag_suggestions')
+			AND EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'scan_cursors')
+			AND EXISTS (SELECT 1 FROM information_schema.columns
+				WHERE table_name = 'unit_tag_suggestions' AND column_name = 'tag_at_sighting')`,
+	},
 }
 
 // Migrate runs all pending schema migrations.

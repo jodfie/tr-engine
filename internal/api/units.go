@@ -149,16 +149,26 @@ func (h *UnitsHandler) UpdateUnit(w http.ResponseWriter, r *http.Request) {
 
 	// Best-effort writeback to TR's unit tags CSV
 	if patch.AlphaTag != nil {
-		if csvPath, ok := h.csvPaths[cid.SystemID]; ok {
-			if csvErr := trconfig.UpdateUnitCSV(csvPath, cid.EntityID, *patch.AlphaTag); csvErr != nil {
-				log := hlog.FromRequest(r)
-				log.Warn().Err(csvErr).Str("csv_path", csvPath).Int("unit_id", cid.EntityID).
-					Msg("failed to write back unit CSV")
-			}
-		}
+		writeBackUnitCSV(r, h.csvPaths, cid.SystemID, cid.EntityID, *patch.AlphaTag)
 	}
 
 	WriteJSON(w, http.StatusOK, unit)
+}
+
+// writeBackUnitCSV writes a unit alpha_tag edit back to trunk-recorder's unit
+// tags CSV when CSV_WRITEBACK is configured for the system. Best-effort:
+// failures are logged, never returned. Shared by PATCH /units/{id} and unit
+// tag suggestion approval.
+func writeBackUnitCSV(r *http.Request, csvPaths map[int]string, systemID, unitID int, alphaTag string) {
+	csvPath, ok := csvPaths[systemID]
+	if !ok {
+		return
+	}
+	if err := trconfig.UpdateUnitCSV(csvPath, unitID, alphaTag); err != nil {
+		log := hlog.FromRequest(r)
+		log.Warn().Err(err).Str("csv_path", csvPath).Int("unit_id", unitID).
+			Msg("failed to write back unit CSV")
+	}
 }
 
 // ListUnitCalls returns calls that include transmissions from a specific unit.

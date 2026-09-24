@@ -138,6 +138,15 @@ type Config struct {
 	TranscribeIncludeTGIDs string `env:"TRANSCRIBE_INCLUDE_TGIDS"` // allowlist: only transcribe these TGIDs
 	TranscribeExcludeTGIDs string `env:"TRANSCRIBE_EXCLUDE_TGIDS"` // denylist: skip these TGIDs
 
+	// Unit tag suggestions (opt-in): scan transcriptions for units identifying
+	// themselves ("County, Medic 12 on scene") and queue candidate alpha tags
+	// for review. Units are only changed by an explicit approve via the API.
+	// MIN_CALLS/MIN_SHARE gate which pending candidates the review API lists.
+	UnitTagSuggestions         bool          `env:"UNIT_TAG_SUGGESTIONS" envDefault:"false"`
+	UnitTagSuggestionsMinCalls int           `env:"UNIT_TAG_SUGGESTIONS_MIN_CALLS" envDefault:"3"`   // distinct calls before a candidate is listed
+	UnitTagSuggestionsMinShare float64       `env:"UNIT_TAG_SUGGESTIONS_MIN_SHARE" envDefault:"0.2"` // min fraction of the unit's self-ID calls
+	UnitTagSuggestionsInterval time.Duration `env:"UNIT_TAG_SUGGESTIONS_INTERVAL" envDefault:"60s"`  // scan pause once caught up
+
 	// S3 audio storage (optional — local disk used when S3_BUCKET is empty)
 	S3 S3Config
 
@@ -172,6 +181,15 @@ func (c *Config) Validate() error {
 	}
 	if c.S3.Enabled() && c.S3.UploadMode != "async" && c.S3.UploadMode != "sync" {
 		return fmt.Errorf("S3_UPLOAD_MODE must be \"async\" or \"sync\", got %q", c.S3.UploadMode)
+	}
+	if c.UnitTagSuggestionsMinCalls < 1 {
+		return fmt.Errorf("UNIT_TAG_SUGGESTIONS_MIN_CALLS must be >= 1, got %d", c.UnitTagSuggestionsMinCalls)
+	}
+	if c.UnitTagSuggestionsMinShare < 0 || c.UnitTagSuggestionsMinShare > 1 {
+		return fmt.Errorf("UNIT_TAG_SUGGESTIONS_MIN_SHARE must be between 0 and 1, got %g", c.UnitTagSuggestionsMinShare)
+	}
+	if c.UnitTagSuggestions && c.UnitTagSuggestionsInterval <= 0 {
+		return fmt.Errorf("UNIT_TAG_SUGGESTIONS_INTERVAL must be positive, got %s", c.UnitTagSuggestionsInterval)
 	}
 	return nil
 }
