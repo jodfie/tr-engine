@@ -14,6 +14,14 @@ import (
 )
 
 // BackfillJob represents a queued backfill request.
+//
+// Each matching call is handed to the transcription queue at most once per
+// job. Completed counts calls successfully enqueued (not calls whose
+// transcription later succeeded); Failed counts calls that could not be
+// enqueued (load error, unsupported by the provider, or queue full). Total is
+// the number of matching calls when the job starts, raised if more calls
+// become eligible while it runs, so Completed+Failed never exceeds it.
+// Once the job is submitted, Total is guarded by the manager's mutex.
 type BackfillJob struct {
 	ID        int
 	Filters   BackfillFilters
@@ -49,11 +57,31 @@ type BackfillJobStatus struct {
 	CreatedAt time.Time       `json:"created_at"`
 }
 
+// backfillStore is the subset of *database.DB used by the backfill manager.
+type backfillStore interface {
+	CountUntranscribedCalls(ctx context.Context, filter database.BackfillFilter) (int, error)
+	ListUntranscribedCalls(ctx context.Context, filter database.BackfillFilter, after *database.UntranscribedCallKey, limit int) ([]database.UntranscribedCallKey, error)
+	GetCallForTranscription(ctx context.Context, callID int64) (*database.CallTranscriptionInfo, error)
+}
+
+// backfillTranscriber is the subset of *transcribe.WorkerPool used by the
+// backfill manager.
+type backfillTranscriber interface {
+	Enqueue(j transcribe.Job) bool
+	Stats() transcribe.QueueStats
+	ProviderName() string
+	MinDuration() float64
+	MaxDuration() float64
+}
+
+// backfillBatchSize is the number of calls fetched per keyset page.
+const backfillBatchSize = 100
+
 // BackfillManager processes a queue of backfill jobs sequentially,
 // drip-feeding untranscribed calls into the transcription worker pool.
 type BackfillManager struct {
-	db          *database.DB
-	transcriber *transcribe.WorkerPool
+	db          backfillStore
+	transcriber backfillTranscriber
 	log         zerolog.Logger
 	minDuration float64
 	maxDuration float64
@@ -70,6 +98,10 @@ type BackfillManager struct {
 
 // NewBackfillManager creates a new backfill manager.
 func NewBackfillManager(ctx context.Context, db *database.DB, transcriber *transcribe.WorkerPool, log zerolog.Logger) *BackfillManager {
+	return newBackfillManager(ctx, db, transcriber, log)
+}
+
+func newBackfillManager(ctx context.Context, db backfillStore, transcriber backfillTranscriber, log zerolog.Logger) *BackfillManager {
 	return &BackfillManager{
 		db:          db,
 		transcriber: transcriber,
@@ -232,27 +264,55 @@ func (bm *BackfillManager) loop() {
 
 func (bm *BackfillManager) processJob(ctx context.Context, job *BackfillJob) {
 	dbFilter := bm.toDBFilter(job.Filters)
-	offset := 0
-	const batchSize = 100
 
+	// A queued job's count can be stale by the time it starts (an earlier job
+	// may have covered the same calls), so refresh it.
+	countCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	total, err := bm.db.CountUntranscribedCalls(countCtx, dbFilter)
+	cancel()
+	if err == nil {
+		bm.mu.Lock()
+		job.Total = total
+		bm.mu.Unlock()
+	} else if ctx.Err() == nil {
+		bm.log.Warn().Err(err).Int("job_id", job.ID).Msg("backfill recount failed, keeping submit-time total")
+	}
+
+	// Walk the matching calls with a keyset cursor. Each page starts strictly
+	// after the last call handed out, so a call is enqueued at most once per
+	// job and the job ends when the cursor runs off the end, whether or not
+	// the enqueued calls were transcribed. (Re-querying from the top and
+	// relying on transcribed calls dropping out loops forever on any call
+	// that fails during transcription: issue #59.)
+	var cursor *database.UntranscribedCallKey
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 
 		queryCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		ids, err := bm.db.ListUntranscribedCallIDs(queryCtx, dbFilter, batchSize, offset)
+		batch, err := bm.db.ListUntranscribedCalls(queryCtx, dbFilter, cursor, backfillBatchSize)
 		cancel()
 
 		if err != nil {
 			bm.log.Warn().Err(err).Int("job_id", job.ID).Msg("backfill query failed")
 			return
 		}
-		if len(ids) == 0 {
-			return // done
-		}
 
-		for _, callID := range ids {
+		for _, key := range batch {
+			// The query guarantees strictly advancing keys; enforce it here too so
+			// a regression can never re-enqueue a call or spin the job.
+			if cursor != nil && !cursor.Before(key) {
+				bm.log.Error().
+					Int("job_id", job.ID).
+					Int64("call_id", key.CallID).
+					Int64("cursor_call_id", cursor.CallID).
+					Msg("backfill query returned a call at or before the cursor, stopping job")
+				return
+			}
+			k := key
+			cursor = &k
+
 			if ctx.Err() != nil {
 				return
 			}
@@ -262,22 +322,27 @@ func (bm *BackfillManager) processJob(ctx context.Context, job *BackfillJob) {
 				return
 			}
 
-			if bm.enqueueCall(ctx, callID) {
-				job.Completed.Add(1)
-			} else {
-				job.Failed.Add(1)
-			}
+			bm.recordResult(job, bm.enqueueCall(ctx, key.CallID))
 		}
 
-		if len(ids) < batchSize {
-			return // last batch
+		if len(batch) < backfillBatchSize {
+			return // last page
 		}
-		// Don't advance offset — successfully transcribed calls will drop out of
-		// the result set (has_transcription flips to true), so we re-query at offset 0.
-		// Only advance if some failed (they'd stay in the result set and cause an infinite loop).
-		if job.Failed.Load() > 0 {
-			offset = int(job.Failed.Load())
-		}
+	}
+}
+
+// recordResult counts one call as enqueued or failed. Total is raised if calls
+// became eligible after it was counted, so progress never exceeds it.
+func (bm *BackfillManager) recordResult(job *BackfillJob, enqueued bool) {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+	if enqueued {
+		job.Completed.Add(1)
+	} else {
+		job.Failed.Add(1)
+	}
+	if done := int(job.Completed.Load() + job.Failed.Load()); done > job.Total {
+		job.Total = done
 	}
 }
 

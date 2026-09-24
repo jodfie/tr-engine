@@ -3710,6 +3710,12 @@ paths:
         Jobs are processed sequentially — if a job is already active, the
         new job is queued. All filter fields are optional; omitting all
         filters backfills every untranscribed call.
+
+        A job makes a single pass over the matching calls, newest first, and
+        hands each call to the transcription queue at most once. A call whose
+        transcription then fails (for example, because its audio file is
+        missing) stays untranscribed and is not retried by the same job; a
+        later job will pick it up again.
       tags: [admin]
       security:
         - bearerAuth: []
@@ -3737,7 +3743,9 @@ paths:
                     example: 0
                   total:
                     type: integer
-                    description: Number of untranscribed calls matching filters
+                    description: |
+                      Number of untranscribed calls matching filters at
+                      submission. Recounted when the job starts.
                     example: 342
                   filters:
                     $ref: "#/components/schemas/BackfillFilters"
@@ -7051,15 +7059,27 @@ components:
           $ref: "#/components/schemas/BackfillFilters"
         total:
           type: integer
-          description: Total calls to process in this job
+          description: |
+            Number of calls this job covers: the matching untranscribed calls
+            counted when the job starts, raised if more calls become eligible
+            while it runs. `completed + failed` never exceeds it, but can
+            finish below it if some calls were transcribed by other means
+            first.
           example: 342
         completed:
           type: integer
-          description: Number of calls successfully transcribed so far
+          description: |
+            Number of distinct calls handed to the transcription queue so far.
+            Counts enqueues, not finished transcriptions: a call whose
+            transcription later fails (e.g. missing audio file) is still
+            counted here. Each call is counted at most once per job.
           example: 57
         failed:
           type: integer
-          description: Number of calls that failed transcription
+          description: |
+            Number of distinct calls that could not be enqueued (call could not
+            be loaded, not supported by the STT provider, or transcription
+            queue full). Not retried within the job.
           example: 2
         started_at:
           type: string
