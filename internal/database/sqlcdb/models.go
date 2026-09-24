@@ -128,6 +128,12 @@ type ConsoleMessage struct {
 	CreatedAt     pgtype.Timestamptz
 }
 
+type DataFixup struct {
+	Name      string
+	AppliedAt pgtype.Timestamptz
+	Detail    []byte
+}
+
 // Decode rate snapshots. Decimation: 1/min after 1 week, 1/hour after 1 month. Run: SELECT decimate_state_table('decode_rates', 'time').
 type DecodeRate struct {
 	ID                 int64

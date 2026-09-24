@@ -1,10 +1,13 @@
 package trconfig
 
 import (
+	"bufio"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -230,21 +233,38 @@ type UnitEntry struct {
 	AlphaTag string
 }
 
-// LoadUnitCSV reads a trunk-recorder unit tags CSV file (two-column, headerless: unit_id,alpha_tag).
-// Skips the first row if the first column is non-numeric (header row).
-func LoadUnitCSV(path string) ([]UnitEntry, error) {
+// UnitCSVParseResult holds the result of parsing a unit tags CSV.
+type UnitCSVParseResult struct {
+	Entries    []UnitEntry
+	Skipped    int // malformed rows, non-numeric/invalid unit IDs, rows without a tag
+	Duplicates int // rows with a unit ID already seen earlier in the file
+}
+
+// LoadUnitCSV reads a trunk-recorder unit tags CSV file. See ParseUnitCSV.
+func LoadUnitCSV(path string) (*UnitCSVParseResult, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	defer f.Close()
+	return ParseUnitCSV(f)
+}
 
-	r := csv.NewReader(f)
+// ParseUnitCSV parses trunk-recorder unit tags CSV data (TR's unitTagsFile):
+// two columns, unit_id,alpha_tag, with no header required. A UTF-8 BOM is
+// ignored, blank lines are ignored, and the first row is treated as a header
+// when its first column is not numeric. Extra columns are ignored. Rows that
+// can't be parsed, have a non-numeric or out-of-range unit ID (units.unit_id is
+// a 32-bit int), or have an empty tag are counted in Skipped. Later duplicates of a unit ID are kept (the last
+// one wins when imported in order) and counted in Duplicates.
+func ParseUnitCSV(reader io.Reader) (*UnitCSVParseResult, error) {
+	r := csv.NewReader(stripBOM(reader))
 	r.TrimLeadingSpace = true
 	r.LazyQuotes = true
 	r.FieldsPerRecord = -1 // allow variable fields
 
-	var entries []UnitEntry
+	result := &UnitCSVParseResult{}
+	seen := make(map[int]bool)
 	first := true
 	for {
 		record, err := r.Read()
@@ -252,29 +272,62 @@ func LoadUnitCSV(path string) ([]UnitEntry, error) {
 			break
 		}
 		if err != nil {
-			continue // skip malformed rows
+			var perr *csv.ParseError
+			if !errors.As(err, &perr) {
+				return nil, fmt.Errorf("read unit tags CSV: %w", err)
+			}
+			first = false
+			result.Skipped++
+			continue
 		}
-		if len(record) < 2 {
+		if isBlankRecord(record) {
 			continue
 		}
 
 		unitID, parseErr := strconv.Atoi(strings.TrimSpace(record[0]))
-		if parseErr != nil {
-			if first {
-				first = false
-				continue // skip header row
-			}
-			continue
+		if parseErr != nil && first {
+			first = false
+			continue // header row
 		}
 		first = false
+		if parseErr != nil || unitID <= 0 || unitID > math.MaxInt32 || len(record) < 2 {
+			result.Skipped++
+			continue
+		}
+		alphaTag := strings.TrimSpace(record[1])
+		if alphaTag == "" {
+			result.Skipped++
+			continue
+		}
 
-		entries = append(entries, UnitEntry{
-			UnitID:   unitID,
-			AlphaTag: strings.TrimSpace(record[1]),
-		})
+		if seen[unitID] {
+			result.Duplicates++
+		}
+		seen[unitID] = true
+		result.Entries = append(result.Entries, UnitEntry{UnitID: unitID, AlphaTag: alphaTag})
 	}
 
-	return entries, nil
+	return result, nil
+}
+
+// stripBOM skips a leading UTF-8 byte order mark, which spreadsheet tools often
+// write and encoding/csv would otherwise glue onto the first field.
+func stripBOM(r io.Reader) io.Reader {
+	br := bufio.NewReader(r)
+	if b, err := br.Peek(3); err == nil && b[0] == 0xEF && b[1] == 0xBB && b[2] == 0xBF {
+		br.Discard(3)
+	}
+	return br
+}
+
+// isBlankRecord reports whether every field of a CSV record is empty or whitespace.
+func isBlankRecord(record []string) bool {
+	for _, f := range record {
+		if strings.TrimSpace(f) != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // UpdateUnitCSV updates or appends a unit's alpha_tag in a TR unit tags CSV file.
@@ -342,7 +395,7 @@ type CSVParseResult struct {
 // ParseTalkgroupCSVDetailed parses trunk-recorder talkgroup CSV data and returns
 // detailed results including duplicate tgid counts.
 func ParseTalkgroupCSVDetailed(reader io.Reader) (*CSVParseResult, error) {
-	r := csv.NewReader(reader)
+	r := csv.NewReader(stripBOM(reader))
 	r.TrimLeadingSpace = true
 	r.LazyQuotes = true
 

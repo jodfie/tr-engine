@@ -4,7 +4,10 @@ import "testing"
 
 func TestEffectiveTalkgroupPatchSource(t *testing.T) {
 	text := "value"
+	empty := ""
 	priority := 1
+	zero := 0
+	unset := -1
 
 	tests := []struct {
 		name    string
@@ -20,6 +23,12 @@ func TestEffectiveTalkgroupPatchSource(t *testing.T) {
 		{"tag marks manual", "", effectiveTalkgroupPatchSource("", nil, nil, nil, &text, nil), "manual"},
 		{"priority marks manual", "", effectiveTalkgroupPatchSource("", nil, nil, nil, nil, &priority), "manual"},
 		{"mutable field overrides explicit source", "csv", effectiveTalkgroupPatchSource("csv", &text, nil, nil, nil, nil), "manual"},
+		{"priority 0 marks manual", "", effectiveTalkgroupPatchSource("", nil, nil, nil, nil, &zero), "manual"},
+		// UpdateTalkgroupFields ignores empty strings and negative priority, so
+		// such a no-op PATCH must not pin the current values as manual.
+		{"empty strings preserve source", "csv", effectiveTalkgroupPatchSource("csv", &empty, &empty, &empty, &empty, nil), "csv"},
+		{"negative priority preserves source", "", effectiveTalkgroupPatchSource("", nil, nil, nil, nil, &unset), ""},
+		{"empty alpha tag with real description marks manual", "", effectiveTalkgroupPatchSource("", &empty, &text, nil, nil, nil), "manual"},
 	}
 
 	for _, tt := range tests {

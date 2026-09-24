@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -132,6 +133,12 @@ func main() {
 	if err := db.Migrate(ctx); err != nil {
 		log.Fatal().Err(err).Msg("schema migration failed (run ALTER TABLE manually or grant ALTER privileges)")
 	}
+
+	// One-time upgrade fixup (first start only): older versions left tag edits of
+	// CSV-sourced talkgroups/units marked 'csv', which CSV imports now overwrite.
+	// Mark them 'manual' before the TR_DIR import below and before ingest starts.
+	// Fatal on failure: continuing would silently replace those edits.
+	keepPreUpgradeTagEdits(ctx, db, discovered, cfg.WatchInstanceID, log)
 
 	// Seed admin user if ADMIN_PASSWORD is set and no users exist
 	if cfg.AdminPassword != "" {
@@ -304,6 +311,7 @@ func main() {
 	// Also build CSV path maps for talkgroup and unit writeback on edit
 	tgCSVPaths := make(map[int]string)
 	unitCSVPaths := make(map[int]string)
+	var trCSVs []*trCSVFile
 	if discovered != nil {
 		for _, sys := range discovered.Systems {
 			// Resolve identity once per system (needed for both TG and unit imports)
@@ -327,29 +335,7 @@ func main() {
 				if cfg.CSVWriteback && sys.CSVPath != "" {
 					tgCSVPaths[systemID] = sys.CSVPath
 				}
-				imported := 0
-				for _, tg := range sys.Talkgroups {
-					if uErr := db.UpsertTalkgroupDirectory(ctx, systemID, tg.Tgid,
-						tg.AlphaTag, tg.Mode, tg.Description, tg.Tag, tg.Category, tg.Priority,
-					); uErr != nil {
-						log.Warn().Err(uErr).Int("tgid", tg.Tgid).Msg("failed to import talkgroup")
-						continue
-					}
-					imported++
-				}
-				log.Info().
-					Str("system", sys.ShortName).
-					Int("imported", imported).
-					Int("total", len(sys.Talkgroups)).
-					Msg("talkgroup directory imported")
-
-				// Enrich existing heard talkgroups with directory data
-				enriched, enrichErr := db.EnrichTalkgroupsFromDirectory(ctx, systemID, 0)
-				if enrichErr != nil {
-					log.Warn().Err(enrichErr).Int("system_id", systemID).Msg("failed to enrich talkgroups from directory")
-				} else if enriched > 0 {
-					log.Info().Int64("enriched", enriched).Str("system", sys.ShortName).Msg("heard talkgroups enriched from directory")
-				}
+				_ = importTRTalkgroups(ctx, db, systemID, sys.ShortName, sys.Talkgroups, log)
 			}
 
 			// Import unit tags
@@ -357,21 +343,25 @@ func main() {
 				if cfg.CSVWriteback && sys.UnitCSVPath != "" {
 					unitCSVPaths[systemID] = sys.UnitCSVPath
 				}
-				imported := 0
-				for _, u := range sys.Units {
-					if uErr := db.ImportUnitTag(ctx, systemID, u.UnitID, u.AlphaTag); uErr != nil {
-						log.Warn().Err(uErr).Int("unit_id", u.UnitID).Msg("failed to import unit tag")
-						continue
-					}
-					imported++
-				}
-				log.Info().
-					Str("system", sys.ShortName).
-					Int("imported", imported).
-					Int("total", len(sys.Units)).
-					Msg("unit tags imported")
+				_ = importTRUnitTags(ctx, db, systemID, sys.ShortName, sys.Units, log)
+			}
+
+			// Re-import the CSVs when they change: tr-engine reads them only here,
+			// and MQTT no longer updates CSV-sourced tags.
+			if sys.CSVPath != "" {
+				trCSVs = append(trCSVs, &trCSVFile{watch: trconfig.NewFileWatch(sys.CSVPath, sys.CSVStamp),
+					systemID: systemID, shortName: sys.ShortName})
+			}
+			if sys.UnitCSVPath != "" {
+				trCSVs = append(trCSVs, &trCSVFile{watch: trconfig.NewFileWatch(sys.UnitCSVPath, sys.UnitCSVStamp),
+					systemID: systemID, shortName: sys.ShortName, units: true})
 			}
 		}
+	}
+	if len(trCSVs) > 0 {
+		go watchTRCSVs(ctx, db, trCSVs, trCSVPollInterval, log)
+		log.Info().Int("files", len(trCSVs)).Dur("interval", trCSVPollInterval).
+			Msg("watching trunk-recorder CSV files for changes")
 	}
 	if cfg.CSVWriteback && (len(tgCSVPaths) > 0 || len(unitCSVPaths) > 0) {
 		log.Info().Int("talkgroup_csvs", len(tgCSVPaths)).Int("unit_csvs", len(unitCSVPaths)).
@@ -490,4 +480,222 @@ func main() {
 	}
 
 	log.Info().Msg("tr-engine stopped")
+}
+
+// trCSVPollInterval is how often TR_DIR CSV files are checked for changes. A
+// change is imported on the second check after it (see trconfig.FileWatch).
+const trCSVPollInterval = 30 * time.Second
+
+// trCSVFile is a TR_DIR talkgroup CSV (units=false) or unit tags CSV
+// (units=true) imported into systemID.
+type trCSVFile struct {
+	watch     *trconfig.FileWatch
+	systemID  int
+	shortName string
+	units     bool
+}
+
+// watchTRCSVs re-imports TR_DIR CSV files whose contents changed since tr-engine
+// started (e.g. talkgroupsFile edited and only trunk-recorder restarted), the
+// same way the startup import does, until ctx is done.
+func watchTRCSVs(ctx context.Context, db *database.DB, files []*trCSVFile, interval time.Duration, log zerolog.Logger) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		for _, f := range files {
+			stamp, ok := f.watch.Poll()
+			if !ok {
+				continue
+			}
+			log.Info().Str("system", f.shortName).Str("path", f.watch.Path).Msg("trunk-recorder CSV changed, re-importing")
+			if f.units {
+				result, err := trconfig.LoadUnitCSV(f.watch.Path)
+				if err != nil {
+					// Retrying the same file won't help; wait for the next change.
+					log.Warn().Err(err).Str("path", f.watch.Path).Msg("failed to load unit tags CSV")
+					f.watch.Imported(stamp)
+					continue
+				}
+				if importTRUnitTags(ctx, db, f.systemID, f.shortName, result.Entries, log) == nil {
+					f.watch.Imported(stamp)
+				}
+			} else {
+				result, err := trconfig.LoadTalkgroupCSV(f.watch.Path)
+				if err != nil {
+					log.Warn().Err(err).Str("path", f.watch.Path).Msg("failed to load talkgroup CSV")
+					f.watch.Imported(stamp)
+					continue
+				}
+				if importTRTalkgroups(ctx, db, f.systemID, f.shortName, result.Entries, log) == nil {
+					f.watch.Imported(stamp)
+				}
+			}
+		}
+	}
+}
+
+// importTRTalkgroups imports a TR_DIR talkgroup CSV into the talkgroup directory
+// and applies it to heard talkgroups. It logs failures and returns an error if
+// any row or the enrichment failed (so a re-import is retried).
+func importTRTalkgroups(ctx context.Context, db *database.DB, systemID int, shortName string,
+	entries []trconfig.TalkgroupEntry, log zerolog.Logger) error {
+	imported := 0
+	var firstErr error
+	for _, tg := range entries {
+		if uErr := db.UpsertTalkgroupDirectory(ctx, systemID, tg.Tgid,
+			tg.AlphaTag, tg.Mode, tg.Description, tg.Tag, tg.Category, tg.Priority,
+		); uErr != nil {
+			log.Warn().Err(uErr).Int("tgid", tg.Tgid).Msg("failed to import talkgroup")
+			if firstErr == nil {
+				firstErr = uErr
+			}
+			continue
+		}
+		imported++
+	}
+	log.Info().
+		Str("system", shortName).
+		Int("imported", imported).
+		Int("total", len(entries)).
+		Msg("talkgroup directory imported")
+
+	// Enrich existing heard talkgroups with directory data
+	enriched, enrichErr := db.EnrichTalkgroupsFromDirectory(ctx, systemID, 0)
+	if enrichErr != nil {
+		log.Warn().Err(enrichErr).Int("system_id", systemID).Msg("failed to enrich talkgroups from directory")
+		return enrichErr
+	} else if enriched > 0 {
+		log.Info().Int64("enriched", enriched).Str("system", shortName).Msg("heard talkgroups enriched from directory")
+	}
+	return firstErr
+}
+
+// importTRUnitTags imports a TR_DIR unit tags CSV. It logs the result and
+// returns the error, if any.
+func importTRUnitTags(ctx context.Context, db *database.DB, systemID int, shortName string,
+	entries []trconfig.UnitEntry, log zerolog.Logger) error {
+	changed, err := db.ImportUnitTags(ctx, systemID, unitTagsFromTR(entries))
+	if err != nil {
+		log.Warn().Err(err).Str("system", shortName).Int("total", len(entries)).
+			Msg("failed to import unit tags")
+		return err
+	}
+	log.Info().
+		Str("system", shortName).
+		Int("total", len(entries)).
+		Int64("changed", changed).
+		Msg("unit tags imported")
+	return nil
+}
+
+// unitTagsFromTR converts unit tags CSV entries discovered via TR_DIR.
+func unitTagsFromTR(entries []trconfig.UnitEntry) []database.UnitTag {
+	tags := make([]database.UnitTag, len(entries))
+	for i, e := range entries {
+		tags[i] = database.UnitTag{UnitID: e.UnitID, AlphaTag: e.AlphaTag}
+	}
+	return tags
+}
+
+// keepPreUpgradeTagEdits runs database.KeepPreUpgradeTagEdits with the talkgroup
+// and unit tags CSVs discovered via TR_DIR, keyed by the system each one is
+// imported into (systems not created yet have nothing to keep), and logs the
+// talkgroups and units it marked manual. Exits on failure.
+//
+// A configured CSV that failed to load confirms nothing, so all csv rows it
+// covers are kept as manual. That is the safe choice (the old behavior) but
+// permanent, as the fixup runs once, so it is logged per file: the user can fix
+// the file and hand the rows back (docs/getting-started.md).
+func keepPreUpgradeTagEdits(ctx context.Context, db *database.DB, discovered *trconfig.DiscoveryResult,
+	instanceID string, log zerolog.Logger) {
+	type unloadedCSV struct {
+		system   string
+		systemID int
+		units    bool
+		err      error
+	}
+	var unloaded []unloadedCSV
+	files := make(map[int]database.CSVTags)
+	if discovered != nil {
+		for _, sys := range discovered.Systems {
+			if len(sys.Talkgroups) == 0 && len(sys.Units) == 0 && sys.CSVErr == nil && sys.UnitCSVErr == nil {
+				continue
+			}
+			// Same lookup the TR_DIR import's identity resolution does first.
+			systemID, err := db.FindSystemViaSiteIdentity(ctx, instanceID, sys.ShortName)
+			if err != nil {
+				log.Fatal().Err(err).Str("system", sys.ShortName).
+					Msg("failed to look up system for pre-upgrade tag edit check")
+			}
+			if systemID == 0 {
+				continue
+			}
+			if sys.CSVErr != nil {
+				unloaded = append(unloaded, unloadedCSV{sys.ShortName, systemID, false, sys.CSVErr})
+			}
+			if sys.UnitCSVErr != nil {
+				unloaded = append(unloaded, unloadedCSV{sys.ShortName, systemID, true, sys.UnitCSVErr})
+			}
+			f := files[systemID]
+			for _, tg := range sys.Talkgroups {
+				f.Talkgroups = append(f.Talkgroups, database.TalkgroupTag{Tgid: tg.Tgid, AlphaTag: tg.AlphaTag})
+			}
+			f.Units = append(f.Units, unitTagsFromTR(sys.Units)...)
+			files[systemID] = f
+		}
+	}
+
+	pinned, ran, err := db.KeepPreUpgradeTagEdits(ctx, files)
+	if err != nil {
+		log.Fatal().Err(err).Msg("failed to keep tag edits made before CSV tag priority (retried on next start)")
+	}
+	if ran && (len(pinned.Talkgroups) > 0 || len(pinned.Units) > 0) {
+		// The full lists are in data_fixups.detail; the log shows the first few.
+		const maxLogged = 50
+		log.Warn().
+			Int("talkgroups", len(pinned.Talkgroups)).Strs("talkgroup_ids", firstN(pinned.Talkgroups, maxLogged)).
+			Int("units", len(pinned.Units)).Strs("unit_ids", firstN(pinned.Units, maxLogged)).
+			Str("fixup", database.PreUpgradeTagEditsFixup).
+			Msg("kept CSV-sourced tags that older versions may have let you edit (not confirmed by a TR_DIR CSV) as manual edits; " +
+				"all IDs are listed in data_fixups.detail. PATCH alpha_tag_source=csv on a talkgroup or unit to use its CSV tag " +
+				"again (docs/getting-started.md has SQL to do that for all of them)")
+	} else if ran {
+		log.Info().Msg("pre-upgrade tag edit check done: no unconfirmed CSV-sourced tags found")
+	}
+	if !ran {
+		return
+	}
+	for _, u := range unloaded {
+		field, file, tags, ids := "talkgroups", "talkgroup CSV", "talkgroup", pinned.Talkgroups
+		if u.units {
+			field, file, tags, ids = "units", "unit tags CSV", "unit", pinned.Units
+		}
+		prefix := strconv.Itoa(u.systemID) + ":"
+		n := 0
+		for _, id := range ids {
+			if strings.HasPrefix(id, prefix) {
+				n++
+			}
+		}
+		if n == 0 {
+			continue
+		}
+		log.Warn().Err(u.err).Str("system", u.system).Int("system_id", u.systemID).Int(field, n).
+			Msg("trunk-recorder " + file + " failed to load, so none of this system's CSV-sourced " + tags +
+				" tags could be confirmed and all were kept as manual edits (this check runs only once). " +
+				"Fix the CSV, hand them back with the SQL in docs/getting-started.md, then restart")
+	}
+}
+
+// firstN returns at most the first n elements of ids.
+func firstN(ids []string, n int) []string {
+	if len(ids) > n {
+		return ids[:n]
+	}
+	return ids
 }

@@ -48,6 +48,39 @@ func (db *DB) FindOrCreateSystem(ctx context.Context, instanceID, sysName, syste
 	return systemID, "0", nil
 }
 
+// FindSystemsByName returns the non-deleted systems a CSV import's system_name
+// refers to: those whose name, or one of whose sites' short_name (TR's
+// shortName), equals name. It never creates a system: ingest finds systems only
+// through their sites, so a site-less system created here would never receive
+// traffic, and the first call from that trunk-recorder would create a second
+// system with the same name.
+func (db *DB) FindSystemsByName(ctx context.Context, name string) ([]AmbiguousMatch, error) {
+	rows, err := db.Pool.Query(ctx, `
+		SELECT s.system_id, COALESCE(s.name, ''), s.sysid
+		FROM systems s
+		WHERE s.deleted_at IS NULL
+		  AND (s.name = $1 OR EXISTS (
+		      SELECT 1 FROM sites st WHERE st.system_id = s.system_id AND st.short_name = $1))
+		ORDER BY s.system_id
+	`, name)
+	if err != nil {
+		return nil, fmt.Errorf("find systems named %q: %w", name, err)
+	}
+	defer rows.Close()
+	var matches []AmbiguousMatch
+	for rows.Next() {
+		var m AmbiguousMatch
+		if err := rows.Scan(&m.SystemID, &m.SystemName, &m.Sysid); err != nil {
+			return nil, err
+		}
+		matches = append(matches, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("find systems named %q: %w", name, err)
+	}
+	return matches, nil
+}
+
 // UpdateSystemIdentity updates a system's P25 identity fields.
 func (db *DB) UpdateSystemIdentity(ctx context.Context, systemID int, systemType, sysid, wacn, name string) error {
 	return db.Q.UpdateSystemIdentity(ctx, sqlcdb.UpdateSystemIdentityParams{
@@ -88,7 +121,28 @@ func (db *DB) FindSystemBySysidWacn(ctx context.Context, sysid, wacn string, exc
 	return systemID, err
 }
 
+// mergeSourceWins is true when a merged source row's alpha_tag_source ($4) ranks
+// at least as high as the target row's (manual > csv > MQTT-discovered/other).
+// A winning source row's non-empty tag fields replace the target's; otherwise it
+// only fills the target's empty fields. So a merge never replaces a manual or CSV
+// tag with a lower-priority one. %s is the table name.
+//
+// alpha_tag_source follows alpha_tag (see mergeTagSource): the target takes the
+// source's label only when it takes the source's alpha_tag, so a kept tag never
+// gets another row's label.
+const mergeSourceWins = `(CASE $4 WHEN 'manual' THEN 3 WHEN 'csv' THEN 2 ELSE 1 END >=
+	CASE %s.alpha_tag_source WHEN 'manual' THEN 3 WHEN 'csv' THEN 2 ELSE 1 END)`
+
+// mergeTagSource is the alpha_tag_source of a merged row: the source row's ($4)
+// when its non-empty alpha_tag ($3) is taken, i.e. it wins (mergeSourceWins) or
+// fills an empty target tag; otherwise the target's. %[1]s is the
+// mergeSourceWins expression, %[2]s the table name.
+const mergeTagSource = `CASE WHEN NULLIF($3, '') IS NULL THEN %[2]s.alpha_tag_source
+	WHEN %[1]s OR NULLIF(%[2]s.alpha_tag, '') IS NULL THEN NULLIF($4, '')
+	ELSE %[2]s.alpha_tag_source END`
+
 // MergeSystems moves all child records from sourceID to targetID and soft-deletes the source.
+// Talkgroup and unit tags are combined by alpha_tag_source priority (mergeSourceWins).
 // Returns counts of moved records for the merge log.
 //
 // NOTE: UPDATE statements on partitioned tables (calls, unit_events, trunking_messages)
@@ -145,19 +199,22 @@ func (db *DB) MergeSystems(ctx context.Context, sourceID, targetID int, performe
 		return 0, 0, 0, 0, 0, 0, fmt.Errorf("move call groups: %w", err)
 	}
 
-	// Merge talkgroups
+	// Merge talkgroups. Tags follow the alpha_tag_source priority (see mergeSourceWins).
 	type tgRow struct {
-		tgid                        int
-		alpha, tag, group, desc string
+		tgid                         int
+		alpha, tag, group, desc, src string
+		mode                         *string
+		priority                     *int
 	}
-	tgRows, err := tx.Query(ctx, `SELECT tgid, COALESCE(alpha_tag,''), COALESCE(tag,''), COALESCE("group",''), COALESCE(description,'') FROM talkgroups WHERE system_id = $1`, sourceID)
+	tgRows, err := tx.Query(ctx, `SELECT tgid, COALESCE(alpha_tag,''), COALESCE(tag,''), COALESCE("group",''), COALESCE(description,''),
+		COALESCE(alpha_tag_source,''), mode, priority FROM talkgroups WHERE system_id = $1`, sourceID)
 	if err != nil {
 		return 0, 0, 0, 0, 0, 0, fmt.Errorf("read source talkgroups: %w", err)
 	}
 	var tgs []tgRow
 	for tgRows.Next() {
 		var r tgRow
-		if err := tgRows.Scan(&r.tgid, &r.alpha, &r.tag, &r.group, &r.desc); err != nil {
+		if err := tgRows.Scan(&r.tgid, &r.alpha, &r.tag, &r.group, &r.desc, &r.src, &r.mode, &r.priority); err != nil {
 			tgRows.Close()
 			return 0, 0, 0, 0, 0, 0, err
 		}
@@ -168,16 +225,29 @@ func (db *DB) MergeSystems(ctx context.Context, sourceID, targetID int, performe
 		return 0, 0, 0, 0, 0, 0, fmt.Errorf("iterate source talkgroups: %w", err)
 	}
 
+	tgWins := fmt.Sprintf(mergeSourceWins, "talkgroups")
+	tgSource := fmt.Sprintf(mergeTagSource, tgWins, "talkgroups")
 	for _, r := range tgs {
 		result, err := tx.Exec(ctx, `
-			INSERT INTO talkgroups (system_id, tgid, alpha_tag, tag, "group", description, first_seen, last_seen)
-			VALUES ($1, $2, $3, $4, $5, $6, now(), now())
+			INSERT INTO talkgroups (system_id, tgid, alpha_tag, alpha_tag_source, tag, "group", description, mode, priority, first_seen, last_seen)
+			VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6, $7, $8, $9, now(), now())
 			ON CONFLICT (system_id, tgid) DO UPDATE SET
-				alpha_tag   = COALESCE(NULLIF($3, ''), talkgroups.alpha_tag),
-				tag         = COALESCE(NULLIF($4, ''), talkgroups.tag),
-				"group"     = COALESCE(NULLIF($5, ''), talkgroups."group"),
-				description = COALESCE(NULLIF($6, ''), talkgroups.description)
-		`, targetID, r.tgid, r.alpha, r.tag, r.group, r.desc)
+				alpha_tag = CASE WHEN `+tgWins+`
+				                 THEN COALESCE(NULLIF($3, ''), talkgroups.alpha_tag)
+				                 ELSE COALESCE(NULLIF(talkgroups.alpha_tag, ''), NULLIF($3, ''), talkgroups.alpha_tag) END,
+				alpha_tag_source = `+tgSource+`,
+				tag = CASE WHEN `+tgWins+`
+				           THEN COALESCE(NULLIF($5, ''), talkgroups.tag)
+				           ELSE COALESCE(NULLIF(talkgroups.tag, ''), NULLIF($5, ''), talkgroups.tag) END,
+				"group" = CASE WHEN `+tgWins+`
+				               THEN COALESCE(NULLIF($6, ''), talkgroups."group")
+				               ELSE COALESCE(NULLIF(talkgroups."group", ''), NULLIF($6, ''), talkgroups."group") END,
+				description = CASE WHEN `+tgWins+`
+				                   THEN COALESCE(NULLIF($7, ''), talkgroups.description)
+				                   ELSE COALESCE(NULLIF(talkgroups.description, ''), NULLIF($7, ''), talkgroups.description) END,
+				mode     = CASE WHEN `+tgWins+` THEN COALESCE($8, talkgroups.mode) ELSE COALESCE(talkgroups.mode, $8) END,
+				priority = CASE WHEN `+tgWins+` THEN COALESCE($9, talkgroups.priority) ELSE COALESCE(talkgroups.priority, $9) END
+		`, targetID, r.tgid, r.alpha, r.src, r.tag, r.group, r.desc, r.mode, r.priority)
 		if err != nil {
 			return 0, 0, 0, 0, 0, 0, fmt.Errorf("merge talkgroup %d: %w", r.tgid, err)
 		}
@@ -190,19 +260,19 @@ func (db *DB) MergeSystems(ctx context.Context, sourceID, targetID int, performe
 		return 0, 0, 0, 0, 0, 0, fmt.Errorf("delete source talkgroups: %w", err)
 	}
 
-	// Merge units
+	// Merge units. Tags follow the alpha_tag_source priority (see mergeSourceWins).
 	type unitRow struct {
-		unitID int
-		alpha  string
+		unitID     int
+		alpha, src string
 	}
-	uRows, err := tx.Query(ctx, `SELECT unit_id, COALESCE(alpha_tag,'') FROM units WHERE system_id = $1`, sourceID)
+	uRows, err := tx.Query(ctx, `SELECT unit_id, COALESCE(alpha_tag,''), COALESCE(alpha_tag_source,'') FROM units WHERE system_id = $1`, sourceID)
 	if err != nil {
 		return 0, 0, 0, 0, 0, 0, fmt.Errorf("read source units: %w", err)
 	}
 	var units []unitRow
 	for uRows.Next() {
 		var r unitRow
-		if err := uRows.Scan(&r.unitID, &r.alpha); err != nil {
+		if err := uRows.Scan(&r.unitID, &r.alpha, &r.src); err != nil {
 			uRows.Close()
 			return 0, 0, 0, 0, 0, 0, err
 		}
@@ -213,13 +283,18 @@ func (db *DB) MergeSystems(ctx context.Context, sourceID, targetID int, performe
 		return 0, 0, 0, 0, 0, 0, fmt.Errorf("iterate source units: %w", err)
 	}
 
+	unitWins := fmt.Sprintf(mergeSourceWins, "units")
+	unitSource := fmt.Sprintf(mergeTagSource, unitWins, "units")
 	for _, r := range units {
 		result, err := tx.Exec(ctx, `
-			INSERT INTO units (system_id, unit_id, alpha_tag, first_seen, last_seen)
-			VALUES ($1, $2, $3, now(), now())
+			INSERT INTO units (system_id, unit_id, alpha_tag, alpha_tag_source, first_seen, last_seen)
+			VALUES ($1, $2, $3, NULLIF($4, ''), now(), now())
 			ON CONFLICT (system_id, unit_id) DO UPDATE SET
-				alpha_tag = COALESCE(NULLIF($3, ''), units.alpha_tag)
-		`, targetID, r.unitID, r.alpha)
+				alpha_tag = CASE WHEN `+unitWins+`
+				                 THEN COALESCE(NULLIF($3, ''), units.alpha_tag)
+				                 ELSE COALESCE(NULLIF(units.alpha_tag, ''), NULLIF($3, ''), units.alpha_tag) END,
+				alpha_tag_source = `+unitSource+`
+		`, targetID, r.unitID, r.alpha, r.src)
 		if err != nil {
 			return 0, 0, 0, 0, 0, 0, fmt.Errorf("merge unit %d: %w", r.unitID, err)
 		}

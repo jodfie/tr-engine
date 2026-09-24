@@ -59,18 +59,76 @@ ON CONFLICT (system_id, tgid) DO UPDATE SET
     imported_at = now();
 
 -- name: EnrichTalkgroupsFromDirectory :execrows
+-- Applies the talkgroup directory (the user's imported talkgroup CSV) to heard
+-- talkgroups. Tag priority is manual > csv > mqtt:
+--   * manual rows: user edits win; the directory only fills empty fields.
+--   * any other row with a directory alpha_tag takes that tag (replacing an
+--     MQTT-discovered one) and becomes alpha_tag_source = 'csv'. For csv rows
+--     the directory is authoritative for tag/group/description/mode/priority
+--     too: non-empty directory values replace current ones. UpsertTalkgroup
+--     freezes these fields for csv rows, so leftover per-instance MQTT values
+--     would otherwise stick forever and CSV edits would never propagate.
+--   * rows without a directory alpha_tag keep fill-if-empty semantics.
+-- Directory modes outside the talkgroups.mode CHECK set (e.g. RadioReference
+-- "DE"/"TE") are ignored so one bad row cannot abort a bulk enrichment.
+-- Runs on every call, so only rows whose values actually change are written
+-- (the IS DISTINCT FROM guard repeats the SET expressions); the affected-row
+-- count is the number of talkgroups changed.
 UPDATE talkgroups t SET
-    alpha_tag   = CASE WHEN COALESCE(t.alpha_tag_source, '') = 'manual' THEN t.alpha_tag
-                       ELSE COALESCE(NULLIF(t.alpha_tag, ''), td.alpha_tag) END,
+    alpha_tag = CASE WHEN COALESCE(t.alpha_tag_source, '') = 'manual'
+                     THEN COALESCE(NULLIF(t.alpha_tag, ''), d.alpha_tag, t.alpha_tag)
+                     ELSE COALESCE(d.alpha_tag, t.alpha_tag) END,
     alpha_tag_source = CASE WHEN COALESCE(t.alpha_tag_source, '') = 'manual' THEN t.alpha_tag_source
-                            WHEN COALESCE(t.alpha_tag, '') = '' AND COALESCE(td.alpha_tag, '') <> '' THEN 'csv'
+                            WHEN d.alpha_tag IS NOT NULL THEN 'csv'
                             ELSE t.alpha_tag_source END,
-    tag         = COALESCE(NULLIF(t.tag, ''), td.tag),
-    "group"     = COALESCE(NULLIF(t."group", ''), td.category),
-    description = COALESCE(NULLIF(t.description, ''), td.description),
-    mode        = COALESCE(t.mode, td.mode),
-    priority    = COALESCE(t.priority, td.priority)
-FROM talkgroup_directory td
-WHERE td.system_id = t.system_id AND td.tgid = t.tgid
+    tag = CASE WHEN COALESCE(t.alpha_tag_source, '') <> 'manual' AND (d.alpha_tag IS NOT NULL OR t.alpha_tag_source = 'csv')
+               THEN COALESCE(d.tag, t.tag)
+               ELSE COALESCE(NULLIF(t.tag, ''), d.tag, t.tag) END,
+    "group" = CASE WHEN COALESCE(t.alpha_tag_source, '') <> 'manual' AND (d.alpha_tag IS NOT NULL OR t.alpha_tag_source = 'csv')
+                   THEN COALESCE(d.category, t."group")
+                   ELSE COALESCE(NULLIF(t."group", ''), d.category, t."group") END,
+    description = CASE WHEN COALESCE(t.alpha_tag_source, '') <> 'manual' AND (d.alpha_tag IS NOT NULL OR t.alpha_tag_source = 'csv')
+                       THEN COALESCE(d.description, t.description)
+                       ELSE COALESCE(NULLIF(t.description, ''), d.description, t.description) END,
+    mode = CASE WHEN COALESCE(t.alpha_tag_source, '') <> 'manual' AND (d.alpha_tag IS NOT NULL OR t.alpha_tag_source = 'csv')
+                THEN COALESCE(d.mode, t.mode)
+                ELSE COALESCE(t.mode, d.mode) END,
+    priority = CASE WHEN COALESCE(t.alpha_tag_source, '') <> 'manual' AND (d.alpha_tag IS NOT NULL OR t.alpha_tag_source = 'csv')
+                    THEN COALESCE(d.priority, t.priority)
+                    ELSE COALESCE(t.priority, d.priority) END
+FROM (
+    SELECT td.system_id, td.tgid,
+        NULLIF(btrim(td.alpha_tag), '')   AS alpha_tag,
+        NULLIF(btrim(td.tag), '')         AS tag,
+        NULLIF(btrim(td.category), '')    AS category,
+        NULLIF(btrim(td.description), '') AS description,
+        CASE WHEN upper(btrim(td.mode)) IN ('D', 'A', 'E', 'M', 'T') THEN upper(btrim(td.mode)) END AS mode,
+        td.priority
+    FROM talkgroup_directory td
+) d
+WHERE d.system_id = t.system_id AND d.tgid = t.tgid
   AND t.system_id = @system_id
-  AND (@tgid::int = 0 OR t.tgid = @tgid);
+  AND (@tgid::int = 0 OR t.tgid = @tgid)
+  AND (t.alpha_tag, t.alpha_tag_source, t.tag, t."group", t.description, t.mode, t.priority) IS DISTINCT FROM (
+    CASE WHEN COALESCE(t.alpha_tag_source, '') = 'manual'
+         THEN COALESCE(NULLIF(t.alpha_tag, ''), d.alpha_tag, t.alpha_tag)
+         ELSE COALESCE(d.alpha_tag, t.alpha_tag) END,
+    CASE WHEN COALESCE(t.alpha_tag_source, '') = 'manual' THEN t.alpha_tag_source
+         WHEN d.alpha_tag IS NOT NULL THEN 'csv'
+         ELSE t.alpha_tag_source END,
+    CASE WHEN COALESCE(t.alpha_tag_source, '') <> 'manual' AND (d.alpha_tag IS NOT NULL OR t.alpha_tag_source = 'csv')
+         THEN COALESCE(d.tag, t.tag)
+         ELSE COALESCE(NULLIF(t.tag, ''), d.tag, t.tag) END,
+    CASE WHEN COALESCE(t.alpha_tag_source, '') <> 'manual' AND (d.alpha_tag IS NOT NULL OR t.alpha_tag_source = 'csv')
+         THEN COALESCE(d.category, t."group")
+         ELSE COALESCE(NULLIF(t."group", ''), d.category, t."group") END,
+    CASE WHEN COALESCE(t.alpha_tag_source, '') <> 'manual' AND (d.alpha_tag IS NOT NULL OR t.alpha_tag_source = 'csv')
+         THEN COALESCE(d.description, t.description)
+         ELSE COALESCE(NULLIF(t.description, ''), d.description, t.description) END,
+    CASE WHEN COALESCE(t.alpha_tag_source, '') <> 'manual' AND (d.alpha_tag IS NOT NULL OR t.alpha_tag_source = 'csv')
+         THEN COALESCE(d.mode, t.mode)
+         ELSE COALESCE(t.mode, d.mode) END,
+    CASE WHEN COALESCE(t.alpha_tag_source, '') <> 'manual' AND (d.alpha_tag IS NOT NULL OR t.alpha_tag_source = 'csv')
+         THEN COALESCE(d.priority, t.priority)
+         ELSE COALESCE(t.priority, d.priority) END
+  );
