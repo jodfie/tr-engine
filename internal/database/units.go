@@ -332,26 +332,25 @@ type UnitExport struct {
 
 // ExportUnits returns all units for the given systems, suitable for export.
 func (db *DB) ExportUnits(ctx context.Context, systemIDs []int) ([]UnitExport, error) {
-	// Check if alpha_tag_source column exists (added by migration)
-	hasSource := db.columnExists(ctx, "units", "alpha_tag_source")
-
-	var query string
-	if hasSource {
-		query = `SELECT system_id, unit_id,
-			COALESCE(alpha_tag, ''), COALESCE(alpha_tag_source, ''),
-			first_seen, last_seen,
-			COALESCE(recorder_alpha_tag, ''), recorder_alpha_tag_seen,
-			COALESCE(ota_alpha_tag, ''), ota_alpha_tag_first_seen, ota_alpha_tag_last_seen
-			FROM units WHERE ($1::int[] IS NULL OR system_id = ANY($1))
-			ORDER BY system_id, unit_id`
-	} else {
-		query = `SELECT system_id, unit_id,
-			COALESCE(alpha_tag, ''), '',
-			first_seen, last_seen,
-			'', NULL::timestamptz, '', NULL::timestamptz, NULL::timestamptz
-			FROM units WHERE ($1::int[] IS NULL OR system_id = ANY($1))
-			ORDER BY system_id, unit_id`
+	// alpha_tag_source and the recorder/OTA observation columns are added by
+	// separate migrations, so check each; export also runs read-only against
+	// databases that haven't been migrated.
+	sourceCol := `''`
+	if db.columnExists(ctx, "units", "alpha_tag_source") {
+		sourceCol = `COALESCE(alpha_tag_source, '')`
 	}
+	observationCols := `'', NULL::timestamptz, '', NULL::timestamptz, NULL::timestamptz`
+	if db.columnExists(ctx, "units", "ota_alpha_tag_last_seen") {
+		observationCols = `COALESCE(recorder_alpha_tag, ''), recorder_alpha_tag_seen,
+			COALESCE(ota_alpha_tag, ''), ota_alpha_tag_first_seen, ota_alpha_tag_last_seen`
+	}
+
+	query := `SELECT system_id, unit_id,
+			COALESCE(alpha_tag, ''), ` + sourceCol + `,
+			first_seen, last_seen,
+			` + observationCols + `
+			FROM units WHERE ($1::int[] IS NULL OR system_id = ANY($1))
+			ORDER BY system_id, unit_id`
 
 	rows, err := db.Pool.Query(ctx, query, pqIntArray(systemIDs))
 	if err != nil {
