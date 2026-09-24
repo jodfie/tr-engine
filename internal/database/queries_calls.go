@@ -263,11 +263,40 @@ func (db *DB) CountUntranscribedCalls(ctx context.Context, filter BackfillFilter
 	return count, err
 }
 
-// ListUntranscribedCallIDs returns call IDs matching the filter that have no
-// transcription and are not encrypted, ordered by start_time DESC.
-func (db *DB) ListUntranscribedCallIDs(ctx context.Context, filter BackfillFilter, limit, offset int) ([]int64, error) {
+// UntranscribedCallKey identifies a call in backfill order. (start_time,
+// call_id) is the calls primary key, so keys are unique and totally ordered,
+// which makes them usable as a keyset pagination cursor.
+type UntranscribedCallKey struct {
+	CallID    int64
+	StartTime time.Time
+}
+
+// Before reports whether k sorts strictly before other in backfill order
+// (start_time DESC, call_id DESC), i.e. whether k is returned earlier.
+func (k UntranscribedCallKey) Before(other UntranscribedCallKey) bool {
+	if !k.StartTime.Equal(other.StartTime) {
+		return k.StartTime.After(other.StartTime)
+	}
+	return k.CallID > other.CallID
+}
+
+// ListUntranscribedCalls returns up to limit calls matching the filter that
+// have no transcription and are not encrypted, ordered newest first
+// (start_time DESC, call_id DESC).
+//
+// Pagination is keyset-based: when after is non-nil, only calls that sort
+// strictly after that key are returned. Paging therefore never revisits a
+// call, even one that stays untranscribed (e.g. its transcription failed),
+// which an OFFSET-based scan over this shrinking result set cannot guarantee.
+func (db *DB) ListUntranscribedCalls(ctx context.Context, filter BackfillFilter, after *UntranscribedCallKey, limit int) ([]UntranscribedCallKey, error) {
+	var afterTime *time.Time
+	var afterID *int64
+	if after != nil {
+		afterTime = &after.StartTime
+		afterID = &after.CallID
+	}
 	rows, err := db.Pool.Query(ctx, `
-		SELECT call_id
+		SELECT call_id, start_time
 		FROM calls
 		WHERE (has_transcription = false OR has_transcription IS NULL)
 		  AND (transcription_status = 'none' OR transcription_status IS NULL)
@@ -279,27 +308,32 @@ func (db *DB) ListUntranscribedCallIDs(ctx context.Context, filter BackfillFilte
 		  AND ($4::int[] IS NULL OR tgid = ANY($4))
 		  AND ($5::timestamptz IS NULL OR start_time >= $5)
 		  AND ($6::timestamptz IS NULL OR start_time < $6)
-		ORDER BY start_time DESC
-		LIMIT $7 OFFSET $8
+		  -- keyset cursor; start_time <= $7 is implied by the row comparison but
+		  -- lets the planner prune partitions and range-scan on start_time
+		  AND ($7::timestamptz IS NULL OR start_time <= $7)
+		  AND ($7::timestamptz IS NULL OR (start_time, call_id) < ($7, $8::bigint))
+		ORDER BY start_time DESC, call_id DESC
+		LIMIT $9
 	`, nilIfZeroFloat(filter.MinDuration), nilIfZeroFloat(filter.MaxDuration),
 		filter.SystemID, pqIntArray(filter.Tgids),
 		filter.StartTime, filter.EndTime,
-		limit, offset,
+		afterTime, afterID,
+		limit,
 	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var ids []int64
+	var keys []UntranscribedCallKey
 	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var k UntranscribedCallKey
+		if err := rows.Scan(&k.CallID, &k.StartTime); err != nil {
 			return nil, err
 		}
-		ids = append(ids, id)
+		keys = append(keys, k)
 	}
-	return ids, rows.Err()
+	return keys, rows.Err()
 }
 
 // CallFrequencyAPI represents a frequency entry for API responses.
