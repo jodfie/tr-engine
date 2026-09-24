@@ -33,21 +33,29 @@ sudo apt install mosquitto mosquitto-clients
 
 # macOS
 brew install mosquitto
-
-# Docker
-docker run -d --name mosquitto -p 1883:1883 eclipse-mosquitto
 ```
+
+For Docker, use the bundled, login-protected broker from the [Docker Compose guide](./docker.md) instead.
 
 ### Configure
 
-For a local setup, the default config works fine (anonymous access on port 1883). For remote access, create `/etc/mosquitto/conf.d/listener.conf`:
+For a local setup, the default config works fine: Mosquitto 2.x only accepts connections from the same machine. If trunk-recorder runs on another host, open the listener **and require a login**. Never combine a network listener with `allow_anonymous true`. Create `/etc/mosquitto/conf.d/listener.conf`:
 
 ```
 listener 1883
-allow_anonymous true
+allow_anonymous false
+password_file /etc/mosquitto/passwd
 ```
 
-Restart with `sudo systemctl restart mosquitto`.
+Create the password file (you'll be prompted for the password), then restart:
+
+```bash
+sudo mosquitto_passwd -c /etc/mosquitto/passwd trengine
+sudo chown mosquitto:mosquitto /etc/mosquitto/passwd && sudo chmod 600 /etc/mosquitto/passwd
+sudo systemctl restart mosquitto
+```
+
+Use the same login for tr-engine (`MQTT_USERNAME`/`MQTT_PASSWORD` in `.env`) and in trunk-recorder's MQTT plugin config (`username`/`password`). The test commands below then need `-u trengine -P 'your_password'`.
 
 ### Verify
 
@@ -72,9 +80,11 @@ sudo apt install postgresql-17
 # macOS
 brew install postgresql@17
 
-# Docker
-docker run -d --name postgres -p 5432:5432 -e POSTGRES_PASSWORD=secret postgres:17
+# Docker (published on this machine only, with a random superuser password)
+docker run -d --name postgres -p 127.0.0.1:5432:5432 -e POSTGRES_PASSWORD="$(openssl rand -hex 24)" postgres:17
 ```
+
+With Docker, open the SQL prompt below with `docker exec -it postgres psql -U postgres` instead of `sudo -u postgres psql`.
 
 ### Create database and user
 

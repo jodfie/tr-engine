@@ -1,31 +1,30 @@
 ###############################################################################
-# Full tr-engine stack
+# tr-engine stack: PostgreSQL + Mosquitto + tr-engine (+ tr-dashboard + Caddy)
 #
-# Bind all external ports to a dedicated IP on the VM. Assign the IP to your
-# VM's NIC in Proxmox (or via /etc/network/interfaces), then set BIND_IP in .env.
+# Quick start (docs/docker.md): only postgres, mosquitto and tr-engine are
+# needed; start them with `docker compose up -d postgres mosquitto tr-engine`.
+# For a public HTTPS deployment use docker-compose.full.yml instead
+# (docs/docker-full-stack.md).
 #
-# Externally reachable:
-#   BIND_IP:443      → Caddy → tr-engine.luxprimatech.com (HTTPS)
-#   BIND_IP:443      → Caddy → tr-dashboard.luxprimatech.com (HTTPS)
-#   BIND_IP:1883     → mosquitto (TCP direct)
+# Security defaults:
+#   - There is no default database password: POSTGRES_PASSWORD must be set
+#     in .env or compose refuses to start.
+#   - PostgreSQL is never published on the host.
+#   - Mosquitto requires a login (mosquitto/mosquitto.conf + mosquitto/passwd).
+#   - Every published port binds to 127.0.0.1 unless you choose otherwise:
+#       HTTP_BIND_IP  tr-engine :8080   (default 127.0.0.1)
+#       MQTT_BIND_IP  mosquitto :1883   (default 127.0.0.1; set it for
+#                                        trunk-recorders on other hosts)
+#       BIND_IP       caddy :80/:443    (default 127.0.0.1)
 #
-# Internal only:
-#   postgres
-#
-# DNS records (all A records to BIND_IP):
-#   tr-engine.luxprimatech.com     → Cloudflare proxied OK
-#   tr-dashboard.luxprimatech.com  → Cloudflare proxied OK
-#   mqtt.luxprimatech.com          → DNS only (gray cloud)
-#
-# Quick start:
-#   cp sample.env .env   # set BIND_IP and credentials
-#   mkdir -p caddy mosquitto
-#   # generate mosquitto passwd file (see below)
-#   docker compose up -d
-#
-# Generate mosquitto password file:
-#   docker run --rm -v ./mosquitto:/mosquitto/config eclipse-mosquitto:2 \
-#     mosquitto_passwd -b -c /mosquitto/config/passwd trengine YOUR_PASSWORD
+# First run:
+#   cp sample.env .env    # set POSTGRES_PASSWORD, MQTT_USERNAME, MQTT_PASSWORD
+#   mkdir -p mosquitto    # plus mosquitto/mosquitto.conf from this repo
+#   # create mosquitto/passwd; first export the same MQTT_USERNAME and
+#   # MQTT_PASSWORD you put in .env:
+#   docker run --rm -e MQTT_USERNAME -e MQTT_PASSWORD -v "$PWD/mosquitto:/mosquitto/config" \
+#     eclipse-mosquitto:2 sh -c 'mosquitto_passwd -c -b /mosquitto/config/passwd "$MQTT_USERNAME" "$MQTT_PASSWORD" && chown mosquitto:mosquitto /mosquitto/config/passwd'
+#   docker compose up -d postgres mosquitto tr-engine
 ###############################################################################
 
 services:
@@ -33,7 +32,7 @@ services:
     image: postgres:17-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-trengine}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trengine}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (generate one with openssl rand -hex 24)}
       POSTGRES_DB: ${POSTGRES_DB:-trengine}
     volumes:
       - ./pgdata:/var/lib/postgresql/data
@@ -47,23 +46,41 @@ services:
   mosquitto:
     image: eclipse-mosquitto:2
     ports:
-      - "${BIND_IP}:1883:1883"
+      # Loopback by default. Remote trunk-recorders need an explicit opt-in:
+      # set MQTT_BIND_IP in .env to a LAN/VPN address (or 0.0.0.0).
+      - "${MQTT_BIND_IP:-127.0.0.1}:${MQTT_PORT:-1883}:1883"
     volumes:
-      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-      - ./mosquitto/passwd:/mosquitto/config/passwd:ro
+      # Long syntax so a missing file is an error instead of Docker silently
+      # creating an empty directory in its place.
+      - type: bind
+        source: ./mosquitto/mosquitto.conf
+        target: /mosquitto/config/mosquitto.conf
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./mosquitto/passwd
+        target: /mosquitto/config/passwd
+        read_only: true
+        bind:
+          create_host_path: false
       - mosquitto-data:/mosquitto/data
     restart: unless-stopped
 
   tr-engine:
     image: ghcr.io/trunk-reporter/tr-engine:latest
+    ports:
+      # Loopback by default (web UI/API at http://localhost:8080). To reach it
+      # from other machines, set HTTP_BIND_IP and configure auth first.
+      - "${HTTP_BIND_IP:-127.0.0.1}:${HTTP_PORT:-8080}:8080"
     env_file:
       - path: ./.env
         required: false
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-trengine}:${POSTGRES_PASSWORD:-trengine}@postgres:5432/${POSTGRES_DB:-trengine}?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-trengine}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-trengine}?sslmode=disable
       MQTT_BROKER_URL: tcp://mosquitto:1883
       MQTT_USERNAME: ${MQTT_USERNAME:-trengine}
-      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?Set MQTT_PASSWORD in .env (must match mosquitto/passwd)}
       AUDIO_DIR: /data/audio
     volumes:
       - ./audio:/data/audio
@@ -92,8 +109,8 @@ services:
   caddy:
     image: caddy:2-alpine
     ports:
-      - "${BIND_IP}:80:80"
-      - "${BIND_IP}:443:443"
+      - "${BIND_IP:-127.0.0.1}:80:80"
+      - "${BIND_IP:-127.0.0.1}:443:443"
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
@@ -107,9 +124,9 @@ services:
   # postgres-exporter:
   #   image: prometheuscommunity/postgres-exporter:latest
   #   ports:
-  #     - "${BIND_IP}:9187:9187"
+  #     - "127.0.0.1:9187:9187"   # unauthenticated metrics: loopback only
   #   environment:
-  #     DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-trengine}:${POSTGRES_PASSWORD:-trengine}@postgres:5432/${POSTGRES_DB:-trengine}?sslmode=disable
+  #     DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-trengine}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-trengine}?sslmode=disable
   #   depends_on:
   #     postgres:
   #       condition: service_healthy

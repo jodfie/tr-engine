@@ -52,7 +52,7 @@ main.go                      config.go
 3. CLI overrides applied field-by-field (non-empty strings only)
 4. Deprecated compatibility: if `AUTH_ENABLED=false`, clear legacy token values so old open-mode configs stay open
 
-Docker Compose uses `${VAR:-default}` interpolation in `docker-compose.yml` so all settings work with zero `.env`.
+Docker Compose uses `${VAR:-default}` interpolation in `docker-compose.yml` so most settings work without `.env`. Secrets have no defaults: `POSTGRES_PASSWORD` and `MQTT_PASSWORD` use `${VAR:?...}` so compose refuses to start without them.
 
 ## 3. Database Lifecycle
 

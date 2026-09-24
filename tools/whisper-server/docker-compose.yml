@@ -2,7 +2,11 @@ services:
   whisper:
     build: .
     ports:
-      - "8000:8000"
+      # The API has no authentication, so it listens on this machine only by
+      # default. If tr-engine runs on another host (or in a container that
+      # can't reach the host's loopback), set WHISPER_BIND_IP to a LAN/VPN
+      # address, e.g. WHISPER_BIND_IP=192.168.1.20 docker compose up -d
+      - "${WHISPER_BIND_IP:-127.0.0.1}:8000:8000"
     environment:
       - WHISPER_MODEL=${WHISPER_MODEL:-large-v3}
       - DEVICE=${DEVICE:-auto}

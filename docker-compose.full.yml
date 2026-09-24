@@ -1,33 +1,30 @@
 ###############################################################################
-# Full tr-engine stack
+# Full tr-engine stack (public HTTPS deployment) — see docs/docker-full-stack.md
 #
-# Bind all external ports to a dedicated IP on the VM. Assign the IP to your
-# VM's NIC in Proxmox (or via /etc/network/interfaces), then set BIND_IP in .env.
+# Bind the public ports to a dedicated IP on the host (or 0.0.0.0 for all
+# interfaces) by setting BIND_IP in .env. BIND_IP is required.
 #
 # Externally reachable:
-#   BIND_IP:443      → Caddy → tr-engine.luxprimatech.com (HTTPS)
-#   BIND_IP:443      → Caddy → tr-dashboard.luxprimatech.com (HTTPS)
-#   BIND_IP:1883     → mosquitto (TCP direct)
-#   BIND_IP:9187     → postgres-exporter metrics
+#   BIND_IP:80/443      → Caddy → tr-engine and tr-dashboard (HTTPS)
 #
-# Internal only:
-#   postgres
+# Loopback only by default:
+#   127.0.0.1:1883      → mosquitto (login required). trunk-recorders on
+#                         other hosts need an explicit opt-in: set
+#                         MQTT_BIND_IP (e.g. to BIND_IP) in .env.
+#   127.0.0.1:9187      → postgres-exporter metrics (unauthenticated)
 #
-# DNS records (all A records to BIND_IP):
-#   tr-engine.luxprimatech.com     → Cloudflare proxied OK
-#   tr-dashboard.luxprimatech.com  → Cloudflare proxied OK
-#   mqtt.luxprimatech.com          → DNS only (gray cloud)
+# Internal only (never published):
+#   postgres, tr-engine, tr-dashboard
 #
 # Quick start:
 #   cp docker-compose.full.yml docker-compose.yml
-#   cp sample.env .env   # set BIND_IP and credentials
-#   mkdir -p caddy mosquitto
-#   # generate mosquitto passwd file (see below)
+#   cp sample.env .env   # set BIND_IP, POSTGRES_PASSWORD, MQTT_USERNAME/MQTT_PASSWORD
+#   mkdir -p caddy mosquitto   # add caddy/Caddyfile and mosquitto/mosquitto.conf
+#   # create mosquitto/passwd; first export the same MQTT_USERNAME and
+#   # MQTT_PASSWORD you put in .env:
+#   docker run --rm -e MQTT_USERNAME -e MQTT_PASSWORD -v "$PWD/mosquitto:/mosquitto/config" \
+#     eclipse-mosquitto:2 sh -c 'mosquitto_passwd -c -b /mosquitto/config/passwd "$MQTT_USERNAME" "$MQTT_PASSWORD" && chown mosquitto:mosquitto /mosquitto/config/passwd'
 #   docker compose up -d
-#
-# Generate mosquitto password file:
-#   docker run --rm -v ./mosquitto:/mosquitto/config eclipse-mosquitto:2 \
-#     mosquitto_passwd -b -c /mosquitto/config/passwd trengine YOUR_PASSWORD
 ###############################################################################
 
 services:
@@ -35,7 +32,7 @@ services:
     image: postgres:17-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-trengine}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trengine}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env (generate one with openssl rand -hex 24)}
       POSTGRES_DB: ${POSTGRES_DB:-trengine}
     volumes:
       - ./pgdata:/var/lib/postgresql/data
@@ -49,10 +46,24 @@ services:
   mosquitto:
     image: eclipse-mosquitto:2
     ports:
-      - "${BIND_IP}:1883:1883"
+      # Loopback by default. Remote trunk-recorders need an explicit opt-in:
+      # set MQTT_BIND_IP in .env to a LAN/VPN address (or 0.0.0.0).
+      - "${MQTT_BIND_IP:-127.0.0.1}:${MQTT_PORT:-1883}:1883"
     volumes:
-      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
-      - ./mosquitto/passwd:/mosquitto/config/passwd:ro
+      # Long syntax so a missing file is an error instead of Docker silently
+      # creating an empty directory in its place.
+      - type: bind
+        source: ./mosquitto/mosquitto.conf
+        target: /mosquitto/config/mosquitto.conf
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./mosquitto/passwd
+        target: /mosquitto/config/passwd
+        read_only: true
+        bind:
+          create_host_path: false
       - mosquitto-data:/mosquitto/data
     restart: unless-stopped
 
@@ -62,10 +73,10 @@ services:
       - path: ./.env
         required: false
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-trengine}:${POSTGRES_PASSWORD:-trengine}@postgres:5432/${POSTGRES_DB:-trengine}?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-trengine}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-trengine}?sslmode=disable
       MQTT_BROKER_URL: tcp://mosquitto:1883
       MQTT_USERNAME: ${MQTT_USERNAME:-trengine}
-      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?Set MQTT_PASSWORD in .env (must match mosquitto/passwd)}
       AUDIO_DIR: /data/audio
     volumes:
       - ./audio:/data/audio
@@ -94,8 +105,8 @@ services:
   caddy:
     image: caddy:2-alpine
     ports:
-      - "${BIND_IP}:80:80"
-      - "${BIND_IP}:443:443"
+      - "${BIND_IP:?Set BIND_IP in .env to the address Caddy should serve 80/443 on (0.0.0.0 = all interfaces)}:80:80"
+      - "${BIND_IP:?Set BIND_IP in .env to the address Caddy should serve 80/443 on (0.0.0.0 = all interfaces)}:443:443"
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
@@ -108,9 +119,11 @@ services:
   postgres-exporter:
     image: prometheuscommunity/postgres-exporter:latest
     ports:
-      - "${BIND_IP}:9187:9187"
+      # Unauthenticated metrics: loopback only. Scrape from this host, or put
+      # Prometheus on this compose network and drop the port entirely.
+      - "127.0.0.1:9187:9187"
     environment:
-      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-trengine}:${POSTGRES_PASSWORD:-trengine}@postgres:5432/${POSTGRES_DB:-trengine}?sslmode=disable
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-trengine}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-trengine}?sslmode=disable
     depends_on:
       postgres:
         condition: service_healthy

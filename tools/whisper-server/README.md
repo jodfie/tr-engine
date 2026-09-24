@@ -103,6 +103,8 @@ docker compose up -d
 
 The compose file handles GPU passthrough and persists the HuggingFace model cache in a named volume.
 
+The server has no authentication, so the compose file publishes port 8000 on `127.0.0.1` only. If tr-engine runs on another machine, or in a Docker container that can't reach the host's loopback, set `WHISPER_BIND_IP` to a LAN or VPN address (for example `WHISPER_BIND_IP=192.168.1.20 docker compose up -d`). Don't expose it to the internet.
+
 ## Starting the Server
 
 ### Windows

@@ -59,6 +59,16 @@ sed -i.bak \
   tr-engine/.env
 rm -f tr-engine/.env.bak
 
+# -- Generate a random database password (there is no default) --
+PG_PASSWORD=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
+if grep -q '^POSTGRES_PASSWORD=' tr-engine/.env; then
+  sed -i.bak "s|^POSTGRES_PASSWORD=.*|POSTGRES_PASSWORD=${PG_PASSWORD}|" tr-engine/.env
+  rm -f tr-engine/.env.bak
+else
+  printf '\nPOSTGRES_PASSWORD=%s\n' "$PG_PASSWORD" >> tr-engine/.env
+fi
+chmod 600 tr-engine/.env
+
 # -- Generate docker-compose.yml --
 cat > tr-engine/docker-compose.yml <<YAML
 services:
@@ -66,7 +76,7 @@ services:
     image: postgres:17-alpine
     environment:
       POSTGRES_USER: \${POSTGRES_USER:-trengine}
-      POSTGRES_PASSWORD: \${POSTGRES_PASSWORD:-trengine}
+      POSTGRES_PASSWORD: \${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: \${POSTGRES_DB:-trengine}
     volumes:
       - pgdata:/var/lib/postgresql/data
@@ -79,10 +89,12 @@ services:
   tr-engine:
     image: ghcr.io/trunk-reporter/tr-engine:latest
     ports:
-      - "\${HTTP_PORT:-8080}:8080"
+      # This machine only by default. To open it to your LAN, set
+      # HTTP_BIND_IP in .env (and ADMIN_PASSWORD) — see the install message.
+      - "\${HTTP_BIND_IP:-127.0.0.1}:\${HTTP_PORT:-8080}:8080"
     env_file: .env
     environment:
-      DATABASE_URL: postgres://\${POSTGRES_USER:-trengine}:\${POSTGRES_PASSWORD:-trengine}@postgres:5432/\${POSTGRES_DB:-trengine}?sslmode=disable
+      DATABASE_URL: postgres://\${POSTGRES_USER:-trengine}:\${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/\${POSTGRES_DB:-trengine}?sslmode=disable
       AUDIO_DIR: /data/audio
     volumes:
       - ${TR_DIR}:/trunk-recorder:ro
@@ -116,10 +128,16 @@ docker compose up -d
 echo ""
 echo "========================================="
 echo "  tr-engine is running!"
-echo "  Open http://${HOST}:8080"
+echo "  Open http://localhost:8080 on this machine"
 echo "========================================="
 echo ""
 echo "Call recordings will appear as trunk-recorder captures them."
+echo ""
+echo "tr-engine only listens on this machine (127.0.0.1) by default."
+echo "To open it to other machines on your network, add to tr-engine/.env:"
+echo "  ADMIN_PASSWORD=<choose a password>   # enables login (full auth mode)"
+echo "  HTTP_BIND_IP=${LAN_IP:-<this machine's LAN IP>}"
+echo "then run: docker compose up -d   (and open http://${HOST}:8080)"
 echo ""
 echo "Configuration:  tr-engine/.env"
 echo "  Edit this file to enable MQTT, authentication, transcription, etc."

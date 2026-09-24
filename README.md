@@ -71,6 +71,8 @@ docker compose pull && docker compose up -d
 
 Database and audio files persist in Docker volumes across updates.
 
+> **Security defaults changed.** The shipped compose files no longer have a default database password (`POSTGRES_PASSWORD` is required), never publish PostgreSQL, require a login for the bundled MQTT broker, and bind published ports to `127.0.0.1` unless you set `HTTP_BIND_IP` / `MQTT_BIND_IP` / `BIND_IP`. Installs created with the old default database password (`trengine`) must rotate it before switching to the new files — see [Security defaults changed](docs/docker.md#security-defaults-changed).
+
 ## Authentication
 
 tr-engine has three auth modes, determined by which environment variables you set:
