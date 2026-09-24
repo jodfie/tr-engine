@@ -407,3 +407,170 @@ func TestFixBoundaryWords_NoTransmissions(t *testing.T) {
 		t.Errorf("expected src=1, got src=%d", words[0].Src)
 	}
 }
+
+func TestBuildSegments_SpeakerDoesNotSplit(t *testing.T) {
+	// Same src (e.g. conventional channel with no unit IDs) but two diarized
+	// speakers: segments still group by src only (irc-radio-live.html maps
+	// segments to transmissions one-to-one), and a mixed segment has no speaker.
+	// Checked with and without fullText.
+	mixed := []AttributedWord{
+		{Word: "Engine", Start: 0.0, End: 0.3, Speaker: "A"},
+		{Word: "7", Start: 0.3, End: 0.5, Speaker: "A"},
+		{Word: "copy", Start: 1.0, End: 1.4, Speaker: "B"},
+		{Word: "that", Start: 1.4, End: 1.6, Speaker: "A"},
+	}
+	for _, fullText := range []string{"Engine 7. Copy that.", ""} {
+		segments := buildSegments(mixed, fullText)
+		if len(segments) != 1 {
+			t.Fatalf("fullText=%q: expected 1 segment, got %d: %+v", fullText, len(segments), segments)
+		}
+		if segments[0].Speaker != "" {
+			t.Errorf("fullText=%q: mixed segment speaker = %q, want empty", fullText, segments[0].Speaker)
+		}
+		if segments[0].Start != 0.0 || segments[0].End != 1.6 {
+			t.Errorf("fullText=%q: segment times = %v-%v", fullText, segments[0].Start, segments[0].End)
+		}
+	}
+
+	// A src change still splits, and a segment whose words share one label keeps it.
+	uniform := []AttributedWord{
+		{Word: "Engine", Start: 0.0, End: 0.3, Src: 1, Speaker: "A"},
+		{Word: "7", Start: 0.3, End: 0.5, Src: 1, Speaker: "A"},
+		{Word: "copy", Start: 1.0, End: 1.4, Src: 2, Speaker: "B"},
+	}
+	for _, fullText := range []string{"Engine 7. Copy.", ""} {
+		segments := buildSegments(uniform, fullText)
+		if len(segments) != 2 || segments[0].Speaker != "A" || segments[1].Speaker != "B" {
+			t.Errorf("fullText=%q: got %+v, want 2 segments with speakers A, B", fullText, segments)
+		}
+	}
+}
+
+// diarizedWords builds interpolated words for one utterance, as
+// diarizedToResponse does.
+func diarizedWords(utterance int, speaker, text string, start, end float64) []Word {
+	words := interpolateWords(text, start, end)
+	for i := range words {
+		words[i].Speaker = speaker
+		words[i].Utterance = utterance
+	}
+	return words
+}
+
+func TestSnapUtterances(t *testing.T) {
+	type seg struct {
+		src  int
+		text string
+	}
+	tests := []struct {
+		name  string
+		words []Word
+		src   string
+		want  []seg
+	}{
+		{
+			// Speaker B starts 200ms before src_list's boundary (control-channel
+			// lag). Per-word attribution would put "Copy" on 1001.
+			name: "segment starts in lag window",
+			words: append(diarizedWords(1, "A", "Engine 7 responding.", 0.1, 2.6),
+				diarizedWords(2, "B", "Copy Engine 7.", 2.8, 5.0)...),
+			src:  `[{"src":1001,"pos":0},{"src":2002,"pos":3.0}]`,
+			want: []seg{{1001, "Engine 7 responding."}, {2002, "Copy Engine 7."}},
+		},
+		{
+			// Speaker A runs 400ms past the boundary, so its last interpolated
+			// word starts at 3.022s; it stays on 1001 with the rest of the segment.
+			name: "segment ends in lag window",
+			words: append(diarizedWords(1, "A", "Engine 7 responding to Main and Fifth right now.", 0.0, 3.4),
+				diarizedWords(2, "B", "Copy.", 3.5, 4.0)...),
+			src:  `[{"src":1001,"pos":0},{"src":2002,"pos":3.0}]`,
+			want: []seg{{1001, "Engine 7 responding to Main and Fifth right now."}, {2002, "Copy."}},
+		},
+		{
+			// One segment the diarizer didn't split, overlapping both units for
+			// well over the lag: words stay divided by time.
+			name:  "unsplit segment across two units",
+			words: diarizedWords(1, "A", "one two three four five", 0.0, 5.0),
+			src:   `[{"src":1001,"pos":0},{"src":2002,"pos":3.0}]`,
+			want:  []seg{{1001, "one two three"}, {2002, "four five"}},
+		},
+		{
+			// A segment shorter than the tolerance overlaps every unit by less
+			// than 0.5s. It goes wholly to the unit it overlaps most (2002,
+			// 0.3s vs 1001's 0.1s) rather than being left unattributed.
+			name: "short segment straddling boundary",
+			words: append(diarizedWords(1, "A", "Engine 7 responding.", 0.1, 2.6),
+				diarizedWords(2, "B", "Copy that.", 2.9, 3.3)...),
+			src:  `[{"src":1001,"pos":0},{"src":2002,"pos":3.0}]`,
+			want: []seg{{1001, "Engine 7 responding."}, {2002, "Copy that."}},
+		},
+		{
+			// 1001 transmits twice. Its overlaps with the utterance are summed
+			// (0.25s + 0.35s = 0.6s), so its words are kept even though each
+			// transmission alone is under the tolerance and 2002 (0.8s) wins.
+			name:  "overlap summed per unit",
+			words: diarizedWords(1, "A", "a b c d e f g h i j k l m n", 0.65, 2.05),
+			src:   `[{"src":1001,"pos":0},{"src":2002,"pos":0.9},{"src":1001,"pos":1.7}]`,
+			want:  []seg{{1001, "a b c"}, {2002, "d e f g h i j k"}, {1001, "l m n"}},
+		},
+		{
+			// Real word timestamps (Utterance 0) are left to per-word attribution.
+			name: "real word timestamps untouched",
+			words: []Word{
+				{Word: "Engine", Start: 0.1, End: 0.9},
+				{Word: "7", Start: 0.9, End: 1.2},
+				{Word: "copy", Start: 2.8, End: 3.2},
+				{Word: "that", Start: 3.2, End: 3.6},
+			},
+			src:  `[{"src":1001,"pos":0},{"src":2002,"pos":3.0}]`,
+			want: []seg{{1001, "Engine 7 copy"}, {2002, "that"}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			txs := ParseSrcList(json.RawMessage(tt.src), 6.0)
+			tw := AttributeWords(tt.words, txs, "")
+			var got []seg
+			for _, s := range tw.Segments {
+				got = append(got, seg{s.Src, s.Text})
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("segments = %+v, want %+v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("segment %d = %+v, want %+v", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestSnapUtterances_NoOverlapKeepsAttribution(t *testing.T) {
+	// An utterance entirely after the last transmission (e.g. src_list shorter
+	// than the audio) overlaps nothing: per-word nearest-transmission
+	// attribution stands.
+	words := diarizedWords(1, "A", "ten four", 7.0, 8.0)
+	txs := []Transmission{{Src: 1001, Pos: 0, Duration: 3}, {Src: 2002, Pos: 3, Duration: 3}}
+	tw := AttributeWords(words, txs, "")
+	for _, w := range tw.Words {
+		if w.Src != 2002 {
+			t.Errorf("word %q src = %d, want 2002 (nearest)", w.Word, w.Src)
+		}
+	}
+}
+
+func TestAttributeWords_NoSpeakerKeyForWhisper(t *testing.T) {
+	// Providers that don't diarize must produce the same JSON as before
+	// (no "speaker" key on words or segments).
+	words := []Word{{Word: "hello", Start: 0.0, End: 0.5}}
+	txs := ParseSrcList(json.RawMessage(`[{"src":100,"tag":"Unit","pos":0.0}]`), 1.0)
+	b, err := json.Marshal(AttributeWords(words, txs, "Hello."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"words":[{"word":"hello","start":0,"end":0.5,"src":100,"src_tag":"Unit"}],"segments":[{"src":100,"src_tag":"Unit","start":0,"end":0.5,"text":"Hello."}]}`
+	if string(b) != want {
+		t.Errorf("got  %s\nwant %s", b, want)
+	}
+}

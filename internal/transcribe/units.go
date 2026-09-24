@@ -15,20 +15,25 @@ type Transmission struct {
 
 // AttributedWord is a Whisper word enriched with unit attribution.
 type AttributedWord struct {
-	Word   string  `json:"word"`
-	Start  float64 `json:"start"`
-	End    float64 `json:"end"`
-	Src    int     `json:"src"`               // unit/radio ID (0 if unattributed)
-	SrcTag string  `json:"src_tag,omitempty"`  // unit alpha tag
+	Word    string  `json:"word"`
+	Start   float64 `json:"start"`
+	End     float64 `json:"end"`
+	Src     int     `json:"src"`               // unit/radio ID (0 if unattributed)
+	SrcTag  string  `json:"src_tag,omitempty"` // unit alpha tag
+	Speaker string  `json:"speaker,omitempty"` // diarization speaker label, when the provider diarizes
 }
 
-// Segment groups consecutive words from the same unit.
+// Segment groups consecutive words from the same unit. Speaker changes never
+// split a segment (consumers such as irc-radio-live.html map segments to
+// transmissions one-to-one); Speaker is set only when every word in the
+// segment carries the same diarization label.
 type Segment struct {
-	Src    int     `json:"src"`
-	SrcTag string  `json:"src_tag,omitempty"`
-	Start  float64 `json:"start"`
-	End    float64 `json:"end"`
-	Text   string  `json:"text"`
+	Src     int     `json:"src"`
+	SrcTag  string  `json:"src_tag,omitempty"`
+	Speaker string  `json:"speaker,omitempty"`
+	Start   float64 `json:"start"`
+	End     float64 `json:"end"`
+	Text    string  `json:"text"`
 }
 
 // TranscriptionWords is the structure stored in the transcriptions.words JSONB column.
@@ -97,10 +102,11 @@ func AttributeWords(words []Word, transmissions []Transmission, fullText string)
 		attributed := make([]AttributedWord, len(words))
 		for i, w := range words {
 			attributed[i] = AttributedWord{
-				Word:  w.Word,
-				Start: w.Start,
-				End:   w.End,
-				Src:   0,
+				Word:    w.Word,
+				Start:   w.Start,
+				End:     w.End,
+				Src:     0,
+				Speaker: w.Speaker,
 			}
 		}
 		seg := buildSegments(attributed, fullText)
@@ -114,11 +120,12 @@ func AttributeWords(words []Word, transmissions []Transmission, fullText string)
 		// where Whisper timestamps can straddle two transmissions.
 		src, tag := findTransmission(w.Start, transmissions)
 		attributed[i] = AttributedWord{
-			Word:   w.Word,
-			Start:  w.Start,
-			End:    w.End,
-			Src:    src,
-			SrcTag: tag,
+			Word:    w.Word,
+			Start:   w.Start,
+			End:     w.End,
+			Src:     src,
+			SrcTag:  tag,
+			Speaker: w.Speaker,
 		}
 	}
 
@@ -126,6 +133,10 @@ func AttributeWords(words []Word, transmissions []Transmission, fullText string)
 	// channel timing lags actual voice, causing Whisper to place the first
 	// word of a new speaker slightly before the transmission boundary.
 	fixBoundaryWords(attributed, transmissions)
+
+	// Diarized words only have interpolated timings; keep each speaker
+	// segment with one unit where it merely brushes a transmission boundary.
+	snapUtterances(words, attributed, transmissions)
 
 	segments := buildSegments(attributed, fullText)
 	return &TranscriptionWords{Words: attributed, Segments: segments}
@@ -190,10 +201,13 @@ func buildSegments(words []AttributedWord, fullText string) []Segment {
 
 	positions := mapWordPositions(words, fullText)
 
-	// Identify segment boundaries: groups of consecutive words with the same src
+	// Identify segment boundaries: groups of consecutive words with the same src.
+	// speaker holds the group's diarization label while all its words agree,
+	// and is cleared once they don't.
 	type group struct {
 		src      int
 		srcTag   string
+		speaker  string
 		start    float64 // audio start time
 		end      float64 // audio end time
 		firstIdx int     // index of first word in group
@@ -204,6 +218,7 @@ func buildSegments(words []AttributedWord, fullText string) []Segment {
 	g := group{
 		src:      words[0].Src,
 		srcTag:   words[0].SrcTag,
+		speaker:  words[0].Speaker,
 		start:    words[0].Start,
 		end:      words[0].End,
 		firstIdx: 0,
@@ -214,11 +229,15 @@ func buildSegments(words []AttributedWord, fullText string) []Segment {
 		if words[i].Src == g.src {
 			g.end = words[i].End
 			g.lastIdx = i
+			if words[i].Speaker != g.speaker {
+				g.speaker = ""
+			}
 		} else {
 			groups = append(groups, g)
 			g = group{
 				src:      words[i].Src,
 				srcTag:   words[i].SrcTag,
+				speaker:  words[i].Speaker,
 				start:    words[i].Start,
 				end:      words[i].End,
 				firstIdx: i,
@@ -238,11 +257,12 @@ func buildSegments(words []AttributedWord, fullText string) []Segment {
 			textEnd = len(fullText)
 		}
 		segments[i] = Segment{
-			Src:    grp.src,
-			SrcTag: grp.srcTag,
-			Start:  grp.start,
-			End:    grp.end,
-			Text:   strings.TrimSpace(fullText[textStart:textEnd]),
+			Src:     grp.src,
+			SrcTag:  grp.srcTag,
+			Speaker: grp.speaker,
+			Start:   grp.start,
+			End:     grp.end,
+			Text:    strings.TrimSpace(fullText[textStart:textEnd]),
 		}
 	}
 
@@ -254,11 +274,12 @@ func buildSegments(words []AttributedWord, fullText string) []Segment {
 func buildSegmentsFallback(words []AttributedWord) []Segment {
 	var segments []Segment
 	cur := Segment{
-		Src:    words[0].Src,
-		SrcTag: words[0].SrcTag,
-		Start:  words[0].Start,
-		End:    words[0].End,
-		Text:   strings.TrimSpace(words[0].Word),
+		Src:     words[0].Src,
+		SrcTag:  words[0].SrcTag,
+		Speaker: words[0].Speaker,
+		Start:   words[0].Start,
+		End:     words[0].End,
+		Text:    strings.TrimSpace(words[0].Word),
 	}
 
 	for i := 1; i < len(words); i++ {
@@ -266,15 +287,19 @@ func buildSegmentsFallback(words []AttributedWord) []Segment {
 		if w.Src == cur.Src {
 			cur.End = w.End
 			cur.Text += " " + strings.TrimSpace(w.Word)
+			if w.Speaker != cur.Speaker {
+				cur.Speaker = ""
+			}
 		} else {
 			cur.Text = strings.TrimSpace(cur.Text)
 			segments = append(segments, cur)
 			cur = Segment{
-				Src:    w.Src,
-				SrcTag: w.SrcTag,
-				Start:  w.Start,
-				End:    w.End,
-				Text:   strings.TrimSpace(w.Word),
+				Src:     w.Src,
+				SrcTag:  w.SrcTag,
+				Speaker: w.Speaker,
+				Start:   w.Start,
+				End:     w.End,
+				Text:    strings.TrimSpace(w.Word),
 			}
 		}
 	}
@@ -357,6 +382,60 @@ func fixBoundaryWords(words []AttributedWord, txs []Transmission) {
 
 			words[j].Src = nextSrc
 			words[j].SrcTag = nextTag
+		}
+	}
+}
+
+// snapUtterances corrects unit attribution for words whose timings were
+// interpolated from one diarized speaker segment (Word.Utterance > 0). Those
+// timings are spread evenly across the segment, so when a segment starts or
+// ends inside the window where src_list lags the voice (see fixBoundaryWords),
+// its first or last words land in the neighbouring unit's transmission.
+// fixBoundaryWords can't catch these: interpolated words are rarely "brief".
+//
+// For each utterance, the time it overlaps each unit's transmissions is summed.
+// Words attributed to a unit that overlaps the utterance by less than
+// minOverlap move to the unit it overlaps most. A unit with a substantial
+// overlap keeps its words, so a segment the diarizer failed to split between
+// two radios is still divided by time.
+func snapUtterances(words []Word, attributed []AttributedWord, txs []Transmission) {
+	const minOverlap = 0.5 // seconds; matches the ~500ms src_list lag
+
+	for i := 0; i < len(words); {
+		u := words[i].Utterance
+		j := i + 1
+		for u != 0 && j < len(words) && words[j].Utterance == u {
+			j++
+		}
+		if u != 0 {
+			snapUtterance(attributed[i:j], words[i].Start, words[j-1].End, txs, minOverlap)
+		}
+		i = j
+	}
+}
+
+// snapUtterance applies snapUtterances' rule to the words of one utterance
+// spanning [start, end).
+func snapUtterance(ws []AttributedWord, start, end float64, txs []Transmission, minOverlap float64) {
+	overlap := make(map[int]float64)
+	bestSrc, bestTag, bestOverlap := 0, "", 0.0
+	for _, tx := range txs {
+		o := min(end, tx.Pos+tx.Duration) - max(start, tx.Pos)
+		if o <= 0 {
+			continue
+		}
+		overlap[tx.Src] += o
+		if overlap[tx.Src] > bestOverlap {
+			bestSrc, bestTag, bestOverlap = tx.Src, tx.Tag, overlap[tx.Src]
+		}
+	}
+	if bestOverlap == 0 {
+		return // utterance overlaps no transmission; keep per-word attribution
+	}
+	for k := range ws {
+		if ws[k].Src != bestSrc && overlap[ws[k].Src] < minOverlap {
+			ws[k].Src = bestSrc
+			ws[k].SrcTag = bestTag
 		}
 	}
 }
