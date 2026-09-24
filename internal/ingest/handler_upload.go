@@ -122,7 +122,7 @@ func (p *Pipeline) ProcessUploadedCall(ctx context.Context, instanceID string, m
 	for _, s := range meta.SrcList {
 		if s.Src > 0 {
 			_, _ = p.db.UpsertUnit(ctx, identity.SystemID, s.Src,
-				s.Tag, "upload", startTime, meta.Talkgroup,
+				s.Tag, s.TagOTA, "upload", startTime, meta.Talkgroup,
 			)
 		}
 	}

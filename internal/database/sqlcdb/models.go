@@ -324,17 +324,22 @@ type TrunkingMessage struct {
 }
 
 type Unit struct {
-	SystemID       int
-	UnitID         int
-	AlphaTag       *string
-	AlphaTagSource *string
-	FirstSeen      pgtype.Timestamptz
-	LastSeen       pgtype.Timestamptz
-	LastEventType  *string
-	LastEventTime  pgtype.Timestamptz
-	LastEventTgid  *int32
-	CreatedAt      pgtype.Timestamptz
-	UpdatedAt      pgtype.Timestamptz
+	SystemID             int
+	UnitID               int
+	AlphaTag             *string
+	AlphaTagSource       *string
+	FirstSeen            pgtype.Timestamptz
+	LastSeen             pgtype.Timestamptz
+	LastEventType        *string
+	LastEventTime        pgtype.Timestamptz
+	LastEventTgid        *int32
+	RecorderAlphaTag     *string
+	RecorderAlphaTagSeen pgtype.Timestamptz
+	OtaAlphaTag          *string
+	OtaAlphaTagFirstSeen pgtype.Timestamptz
+	OtaAlphaTagLastSeen  pgtype.Timestamptz
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
 }
 
 type UnitEvent struct {

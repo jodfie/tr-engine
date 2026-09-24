@@ -158,6 +158,54 @@ func TestParseUnitEventData(t *testing.T) {
 		}
 	})
 
+	t.Run("ota_alias_present", func(t *testing.T) {
+		// tr-plugin-mqtt with OTA support sends the raw over-the-air alias
+		// alongside trunk-recorder's resolved tag.
+		payload := []byte(`{
+			"type": "unit_event",
+			"timestamp": 1700000004,
+			"instance_id": "tr-1",
+			"call": {
+				"sys_name": "nswgrn",
+				"unit": 338,
+				"unit_alpha_tag": "FRNSW - P 338 - Jindabyne",
+				"unit_alpha_tag_ota": "P338 FF1",
+				"talkgroup": 200
+			}
+		}`)
+		_, data, err := parseUnitEventData(payload, "call")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if data.UnitAlphaTag != "FRNSW - P 338 - Jindabyne" {
+			t.Errorf("UnitAlphaTag = %q, want resolved tag", data.UnitAlphaTag)
+		}
+		if data.UnitAlphaTagOTA != "P338 FF1" {
+			t.Errorf("UnitAlphaTagOTA = %q, want %q", data.UnitAlphaTagOTA, "P338 FF1")
+		}
+	})
+
+	t.Run("ota_alias_absent", func(t *testing.T) {
+		// Plugins without OTA support omit the field; it must parse as empty
+		// (UpsertUnit treats empty as "no observation").
+		payload := []byte(`{
+			"type": "unit_event",
+			"timestamp": 1700000005,
+			"instance_id": "tr-1",
+			"on": {"sys_name": "nswgrn", "unit": 338, "unit_alpha_tag": "P338 FF1"}
+		}`)
+		_, data, err := parseUnitEventData(payload, "on")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if data.UnitAlphaTagOTA != "" {
+			t.Errorf("UnitAlphaTagOTA = %q, want empty", data.UnitAlphaTagOTA)
+		}
+		if data.UnitAlphaTag != "P338 FF1" {
+			t.Errorf("UnitAlphaTag = %q, want %q", data.UnitAlphaTag, "P338 FF1")
+		}
+	})
+
 	t.Run("call_alert_no_alpha_tags", func(t *testing.T) {
 		// Typical real-world payload where unit tags are not configured
 		payload := []byte(`{

@@ -66,13 +66,21 @@ func (p *Pipeline) handleUnitEvent(eventType string, payload []byte) error {
 	}
 
 	// Upsert unit — returns the DB's effective alpha_tag (respects manual > csv > mqtt priority)
+	// and latest known OTA alias. The OTA alias is stored separately and never
+	// changes alpha_tag.
 	effectiveUnitTag := data.UnitAlphaTag
-	if dbTag, err := p.db.UpsertUnit(ctx, identity.SystemID, data.Unit,
-		data.UnitAlphaTag, eventType, ts, data.Talkgroup,
+	effectiveUnitOTATag := data.UnitAlphaTagOTA
+	if res, err := p.db.UpsertUnit(ctx, identity.SystemID, data.Unit,
+		data.UnitAlphaTag, data.UnitAlphaTagOTA, eventType, ts, data.Talkgroup,
 	); err != nil {
 		p.log.Warn().Err(err).Int("unit", data.Unit).Msg("failed to upsert unit")
-	} else if dbTag != "" {
-		effectiveUnitTag = dbTag
+	} else {
+		if res.AlphaTag != "" {
+			effectiveUnitTag = res.AlphaTag
+		}
+		if res.OTAAlphaTag != "" {
+			effectiveUnitOTATag = res.OTAAlphaTag
+		}
 	}
 
 	// Dedup check: skip DB insert + SSE publish if an equivalent event was
@@ -167,12 +175,12 @@ func (p *Pipeline) handleUnitEvent(eventType string, payload []byte) error {
 		// Call-alert events: upsert target unit and store target_unit in metadata_json
 		effectiveTargetUnitTag := data.TargetUnitAlphaTag
 		if eventType == "call_alert" && data.TargetUnit > 0 {
-			if dbTag, err := p.db.UpsertUnit(ctx, identity.SystemID, data.TargetUnit,
-				data.TargetUnitAlphaTag, "call_alert_target", ts, 0,
+			if res, err := p.db.UpsertUnit(ctx, identity.SystemID, data.TargetUnit,
+				data.TargetUnitAlphaTag, "", "call_alert_target", ts, 0,
 			); err != nil {
 				p.log.Warn().Err(err).Int("target_unit", data.TargetUnit).Msg("failed to upsert target unit")
-			} else if dbTag != "" {
-				effectiveTargetUnitTag = dbTag
+			} else if res.AlphaTag != "" {
+				effectiveTargetUnitTag = res.AlphaTag
 			}
 
 			meta := map[string]any{
@@ -197,6 +205,9 @@ func (p *Pipeline) handleUnitEvent(eventType string, payload []byte) error {
 			"tg_alpha_tag":   effectiveTgTag,
 			"time":           ts,
 			"incident_data":  data.IncidentData,
+		}
+		if effectiveUnitOTATag != "" {
+			ssePayload["unit_ota_alpha_tag"] = effectiveUnitOTATag
 		}
 		if eventType == "signal" {
 			ssePayload["signaling_type"] = data.SignalingType

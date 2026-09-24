@@ -49,7 +49,9 @@ SELECT u.system_id, COALESCE(s.name, '') AS system_name, s.sysid,
     u.unit_id, COALESCE(u.alpha_tag, '') AS alpha_tag, COALESCE(u.alpha_tag_source, '') AS alpha_tag_source,
     u.first_seen, u.last_seen,
     u.last_event_type, u.last_event_time, u.last_event_tgid,
-    COALESCE(tg.alpha_tag, '') AS last_event_tg_tag
+    COALESCE(tg.alpha_tag, '') AS last_event_tg_tag,
+    COALESCE(u.recorder_alpha_tag, '') AS recorder_alpha_tag, u.recorder_alpha_tag_seen,
+    COALESCE(u.ota_alpha_tag, '') AS ota_alpha_tag, u.ota_alpha_tag_first_seen, u.ota_alpha_tag_last_seen
 FROM units u
 JOIN systems s ON s.system_id = u.system_id
 LEFT JOIN talkgroups tg ON tg.system_id = u.system_id AND tg.tgid = u.last_event_tgid
@@ -62,18 +64,23 @@ type GetUnitByCompositeParams struct {
 }
 
 type GetUnitByCompositeRow struct {
-	SystemID       int
-	SystemName     string
-	Sysid          string
-	UnitID         int
-	AlphaTag       string
-	AlphaTagSource string
-	FirstSeen      pgtype.Timestamptz
-	LastSeen       pgtype.Timestamptz
-	LastEventType  *string
-	LastEventTime  pgtype.Timestamptz
-	LastEventTgid  *int32
-	LastEventTgTag string
+	SystemID             int
+	SystemName           string
+	Sysid                string
+	UnitID               int
+	AlphaTag             string
+	AlphaTagSource       string
+	FirstSeen            pgtype.Timestamptz
+	LastSeen             pgtype.Timestamptz
+	LastEventType        *string
+	LastEventTime        pgtype.Timestamptz
+	LastEventTgid        *int32
+	LastEventTgTag       string
+	RecorderAlphaTag     string
+	RecorderAlphaTagSeen pgtype.Timestamptz
+	OtaAlphaTag          string
+	OtaAlphaTagFirstSeen pgtype.Timestamptz
+	OtaAlphaTagLastSeen  pgtype.Timestamptz
 }
 
 func (q *Queries) GetUnitByComposite(ctx context.Context, arg GetUnitByCompositeParams) (GetUnitByCompositeRow, error) {
@@ -92,6 +99,11 @@ func (q *Queries) GetUnitByComposite(ctx context.Context, arg GetUnitByComposite
 		&i.LastEventTime,
 		&i.LastEventTgid,
 		&i.LastEventTgTag,
+		&i.RecorderAlphaTag,
+		&i.RecorderAlphaTagSeen,
+		&i.OtaAlphaTag,
+		&i.OtaAlphaTagFirstSeen,
+		&i.OtaAlphaTagLastSeen,
 	)
 	return i, err
 }
@@ -121,8 +133,14 @@ func (q *Queries) UpdateUnitFields(ctx context.Context, arg UpdateUnitFieldsPara
 }
 
 const upsertUnit = `-- name: UpsertUnit :one
-INSERT INTO units (system_id, unit_id, alpha_tag, first_seen, last_seen, last_event_type, last_event_time, last_event_tgid)
-VALUES ($1, $2, $3, $4, $4, $5, $4, $6)
+INSERT INTO units (system_id, unit_id, alpha_tag, first_seen, last_seen, last_event_type, last_event_time, last_event_tgid,
+    recorder_alpha_tag, recorder_alpha_tag_seen,
+    ota_alpha_tag, ota_alpha_tag_first_seen, ota_alpha_tag_last_seen)
+VALUES ($1, $2, $3, $4, $4, $5, $4, $6,
+    NULLIF($3, ''), CASE WHEN $3 <> '' THEN $4::timestamptz END,
+    NULLIF($7::text, ''),
+    CASE WHEN $7::text <> '' THEN $4::timestamptz END,
+    CASE WHEN $7::text <> '' THEN $4::timestamptz END)
 ON CONFLICT (system_id, unit_id) DO UPDATE SET
     alpha_tag       = CASE WHEN COALESCE(units.alpha_tag_source, '') IN ('manual', 'csv') THEN units.alpha_tag
                            ELSE COALESCE(NULLIF($3, ''), units.alpha_tag) END,
@@ -130,20 +148,56 @@ ON CONFLICT (system_id, unit_id) DO UPDATE SET
     last_seen       = GREATEST(units.last_seen, $4),
     last_event_type = CASE WHEN $4 >= units.last_event_time THEN $5 ELSE units.last_event_type END,
     last_event_time = GREATEST(units.last_event_time, $4),
-    last_event_tgid = CASE WHEN $4 >= units.last_event_time AND $6 > 0 THEN $6 ELSE units.last_event_tgid END
-RETURNING COALESCE(alpha_tag, '') AS alpha_tag
+    last_event_tgid = CASE WHEN $4 >= units.last_event_time AND $6 > 0 THEN $6 ELSE units.last_event_tgid END,
+    recorder_alpha_tag = CASE
+        WHEN $3 <> '' AND (units.recorder_alpha_tag_seen IS NULL OR $4 >= units.recorder_alpha_tag_seen)
+        THEN $3 ELSE units.recorder_alpha_tag END,
+    recorder_alpha_tag_seen = CASE WHEN $3 <> ''
+        THEN GREATEST(units.recorder_alpha_tag_seen, $4) ELSE units.recorder_alpha_tag_seen END,
+    -- Same alias again: move last_seen later. first_seen never moves earlier,
+    -- since a late event may predate a change to another alias and back.
+    -- Different alias: replace it (and restart first_seen) unless this event
+    -- predates the current one.
+    ota_alpha_tag = CASE
+        WHEN $7::text = '' THEN units.ota_alpha_tag
+        WHEN units.ota_alpha_tag IS NULL OR units.ota_alpha_tag = $7::text
+          OR units.ota_alpha_tag_last_seen IS NULL OR $4 >= units.ota_alpha_tag_last_seen
+        THEN $7::text ELSE units.ota_alpha_tag END,
+    ota_alpha_tag_first_seen = CASE
+        WHEN $7::text = '' THEN units.ota_alpha_tag_first_seen
+        WHEN units.ota_alpha_tag = $7::text THEN COALESCE(units.ota_alpha_tag_first_seen, $4)
+        WHEN units.ota_alpha_tag IS NULL OR units.ota_alpha_tag_last_seen IS NULL
+          OR $4 >= units.ota_alpha_tag_last_seen THEN $4
+        ELSE units.ota_alpha_tag_first_seen END,
+    ota_alpha_tag_last_seen = CASE
+        WHEN $7::text = '' THEN units.ota_alpha_tag_last_seen
+        WHEN units.ota_alpha_tag = $7::text THEN GREATEST(units.ota_alpha_tag_last_seen, $4)
+        WHEN units.ota_alpha_tag IS NULL OR units.ota_alpha_tag_last_seen IS NULL
+          OR $4 >= units.ota_alpha_tag_last_seen THEN $4
+        ELSE units.ota_alpha_tag_last_seen END
+RETURNING COALESCE(alpha_tag, '') AS alpha_tag, COALESCE(ota_alpha_tag, '') AS ota_alpha_tag
 `
 
 type UpsertUnitParams struct {
-	SystemID  int
-	UnitID    int
-	AlphaTag  *string
-	EventTime pgtype.Timestamptz
-	EventType *string
-	Tgid      *int32
+	SystemID    int
+	UnitID      int
+	AlphaTag    *string
+	EventTime   pgtype.Timestamptz
+	EventType   *string
+	Tgid        *int32
+	OtaAlphaTag string
 }
 
-func (q *Queries) UpsertUnit(ctx context.Context, arg UpsertUnitParams) (string, error) {
+type UpsertUnitRow struct {
+	AlphaTag    string
+	OtaAlphaTag string
+}
+
+// alpha_tag keeps its manual > csv > mqtt priority. recorder_alpha_tag and
+// ota_alpha_tag are recorded independently of it; an empty value is a no-op,
+// and an older event never replaces a value observed at a later time.
+// ota_alpha_tag_first_seen resets when the OTA alias changes.
+func (q *Queries) UpsertUnit(ctx context.Context, arg UpsertUnitParams) (UpsertUnitRow, error) {
 	row := q.db.QueryRow(ctx, upsertUnit,
 		arg.SystemID,
 		arg.UnitID,
@@ -151,8 +205,9 @@ func (q *Queries) UpsertUnit(ctx context.Context, arg UpsertUnitParams) (string,
 		arg.EventTime,
 		arg.EventType,
 		arg.Tgid,
+		arg.OtaAlphaTag,
 	)
-	var alpha_tag string
-	err := row.Scan(&alpha_tag)
-	return alpha_tag, err
+	var i UpsertUnitRow
+	err := row.Scan(&i.AlphaTag, &i.OtaAlphaTag)
+	return i, err
 }

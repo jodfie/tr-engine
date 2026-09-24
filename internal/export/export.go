@@ -268,6 +268,12 @@ func Export(ctx context.Context, db *database.DB, w io.Writer, opts ExportOption
 				AlphaTagSource: u.AlphaTagSource,
 				FirstSeen:      u.FirstSeen,
 				LastSeen:       u.LastSeen,
+
+				RecorderAlphaTag:     u.RecorderAlphaTag,
+				RecorderAlphaTagSeen: u.RecorderAlphaTagSeen,
+				OTAAlphaTag:          u.OTAAlphaTag,
+				OTAAlphaTagFirstSeen: u.OTAAlphaTagFirstSeen,
+				OTAAlphaTagLastSeen:  u.OTAAlphaTagLastSeen,
 			}
 			if err := enc.Encode(rec); err != nil {
 				return err

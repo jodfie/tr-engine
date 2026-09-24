@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/snarg/tr-engine/internal/database/sqlcdb"
@@ -260,19 +261,27 @@ func (db *DB) MergeSystems(ctx context.Context, sourceID, targetID int, performe
 		return 0, 0, 0, 0, 0, 0, fmt.Errorf("delete source talkgroups: %w", err)
 	}
 
-	// Merge units. Tags follow the alpha_tag_source priority (see mergeSourceWins).
+	// Merge units. Tags follow the alpha_tag_source priority (see mergeSourceWins);
+	// recorder/OTA tag observations merge like an archive import (unitObservationMergeSQL).
 	type unitRow struct {
-		unitID     int
-		alpha, src string
+		unitID                    int
+		alpha, src                string
+		recorderTag, otaTag       string
+		recorderSeen              *time.Time
+		otaFirstSeen, otaLastSeen *time.Time
 	}
-	uRows, err := tx.Query(ctx, `SELECT unit_id, COALESCE(alpha_tag,''), COALESCE(alpha_tag_source,'') FROM units WHERE system_id = $1`, sourceID)
+	uRows, err := tx.Query(ctx, `SELECT unit_id, COALESCE(alpha_tag,''), COALESCE(alpha_tag_source,''),
+		COALESCE(recorder_alpha_tag,''), recorder_alpha_tag_seen,
+		COALESCE(ota_alpha_tag,''), ota_alpha_tag_first_seen, ota_alpha_tag_last_seen
+		FROM units WHERE system_id = $1`, sourceID)
 	if err != nil {
 		return 0, 0, 0, 0, 0, 0, fmt.Errorf("read source units: %w", err)
 	}
 	var units []unitRow
 	for uRows.Next() {
 		var r unitRow
-		if err := uRows.Scan(&r.unitID, &r.alpha, &r.src); err != nil {
+		if err := uRows.Scan(&r.unitID, &r.alpha, &r.src, &r.recorderTag, &r.recorderSeen,
+			&r.otaTag, &r.otaFirstSeen, &r.otaLastSeen); err != nil {
 			uRows.Close()
 			return 0, 0, 0, 0, 0, 0, err
 		}
@@ -287,14 +296,16 @@ func (db *DB) MergeSystems(ctx context.Context, sourceID, targetID int, performe
 	unitSource := fmt.Sprintf(mergeTagSource, unitWins, "units")
 	for _, r := range units {
 		result, err := tx.Exec(ctx, `
-			INSERT INTO units (system_id, unit_id, alpha_tag, alpha_tag_source, first_seen, last_seen)
-			VALUES ($1, $2, $3, NULLIF($4, ''), now(), now())
+			INSERT INTO units (system_id, unit_id, alpha_tag, alpha_tag_source, first_seen, last_seen,
+				recorder_alpha_tag, recorder_alpha_tag_seen,
+				ota_alpha_tag, ota_alpha_tag_first_seen, ota_alpha_tag_last_seen)
+			VALUES ($1, $2, $3, NULLIF($4, ''), now(), now(), NULLIF($5::text, ''), $6, NULLIF($7::text, ''), $8, $9)
 			ON CONFLICT (system_id, unit_id) DO UPDATE SET
 				alpha_tag = CASE WHEN `+unitWins+`
 				                 THEN COALESCE(NULLIF($3, ''), units.alpha_tag)
 				                 ELSE COALESCE(NULLIF(units.alpha_tag, ''), NULLIF($3, ''), units.alpha_tag) END,
-				alpha_tag_source = `+unitSource+`
-		`, targetID, r.unitID, r.alpha, r.src)
+				alpha_tag_source = `+unitSource+`,`+unitObservationMergeSQL+`
+		`, targetID, r.unitID, r.alpha, r.src, r.recorderTag, r.recorderSeen, r.otaTag, r.otaFirstSeen, r.otaLastSeen)
 		if err != nil {
 			return 0, 0, 0, 0, 0, 0, fmt.Errorf("merge unit %d: %w", r.unitID, err)
 		}

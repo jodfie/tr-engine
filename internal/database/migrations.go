@@ -149,6 +149,22 @@ ALTER TABLE systems ADD CONSTRAINT systems_system_type_check
 		ALTER TABLE data_fixups ADD COLUMN IF NOT EXISTS detail jsonb`,
 		check: `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'data_fixups' AND column_name = 'detail')`,
 	},
+	{
+		// Recorder-reported and over-the-air unit tags, stored beside alpha_tag
+		// so a manual/csv rename no longer discards what the radio broadcasts.
+		// Not indexed: keeps per-event UpsertUnit updates HOT-eligible.
+		name: "add units recorder/OTA alpha tag columns",
+		sql: `ALTER TABLE units
+			ADD COLUMN IF NOT EXISTS recorder_alpha_tag text,
+			ADD COLUMN IF NOT EXISTS recorder_alpha_tag_seen timestamptz,
+			ADD COLUMN IF NOT EXISTS ota_alpha_tag text,
+			ADD COLUMN IF NOT EXISTS ota_alpha_tag_first_seen timestamptz,
+			ADD COLUMN IF NOT EXISTS ota_alpha_tag_last_seen timestamptz`,
+		check: `SELECT (SELECT count(*) FROM information_schema.columns
+			WHERE table_name = 'units' AND column_name IN (
+				'recorder_alpha_tag', 'recorder_alpha_tag_seen',
+				'ota_alpha_tag', 'ota_alpha_tag_first_seen', 'ota_alpha_tag_last_seen')) = 5`,
+	},
 }
 
 // Migrate runs all pending schema migrations.
