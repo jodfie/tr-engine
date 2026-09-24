@@ -23,27 +23,32 @@ curl -sO https://raw.githubusercontent.com/trunk-reporter/tr-engine/master/docke
 
 ## 2. Configure your MQTT broker
 
-Create a `.env` file with your broker details:
+Create a `.env` file with a database password and your broker details:
 
 ```bash
+cat > .env <<EOF
+POSTGRES_PASSWORD=$(openssl rand -hex 24)
 MQTT_BROKER_URL=tcp://192.168.1.50:1883
-MQTT_USERNAME=
-MQTT_PASSWORD=
+MQTT_USERNAME=your-broker-user
+MQTT_PASSWORD=your-broker-password
 MQTT_TOPICS=trengine/#
+EOF
+chmod 600 .env
 ```
 
 | Variable | What to set |
 |----------|-------------|
+| `POSTGRES_PASSWORD` | Required — there is no default and compose won't start without it. Generate with `openssl rand -hex 24`. |
 | `MQTT_BROKER_URL` | Your broker's address — e.g. `tcp://192.168.1.50:1883` |
-| `MQTT_USERNAME` | Broker credentials (leave empty for anonymous) |
-| `MQTT_PASSWORD` | Broker credentials (leave empty for anonymous) |
+| `MQTT_USERNAME` | Broker login. Your broker should require one (`allow_anonymous false`), especially if it's reachable from other machines. |
+| `MQTT_PASSWORD` | Broker password |
 | `MQTT_TOPICS` | Must match your TR plugin's topic prefix with `/#`. If your TR plugin uses `topic: "myradio/feeds"`, set this to `myradio/#` |
 
 See [`sample.env`](https://github.com/trunk-reporter/tr-engine/blob/master/sample.env) for all available options.
 
 ## 3. Edit `docker-compose.yml`
 
-Remove the `mosquitto` service and the `depends_on` reference to it — you don't need a bundled broker.
+Replace the file's contents with the version below. It keeps PostgreSQL and tr-engine and drops the bundled `mosquitto` (plus `tr-dashboard` and `caddy`, which belong to the [full stack](./docker-full-stack.md)).
 
 Here's what the file should look like after editing:
 
@@ -53,7 +58,7 @@ services:
     image: postgres:17-alpine
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-trengine}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trengine}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-trengine}
     volumes:
       - ./pgdata:/var/lib/postgresql/data
@@ -66,13 +71,15 @@ services:
   tr-engine:
     image: ghcr.io/trunk-reporter/tr-engine:latest
     ports:
-      - "${HTTP_PORT:-8080}:8080"
+      # This machine only. Set HTTP_BIND_IP in .env to open it to your LAN
+      # (set ADMIN_PASSWORD first).
+      - "${HTTP_BIND_IP:-127.0.0.1}:${HTTP_PORT:-8080}:8080"
     env_file:
       - path: ./.env
         required: false
     environment:
       # Docker-internal: DATABASE_URL is built from POSTGRES_* vars above
-      DATABASE_URL: postgres://${POSTGRES_USER:-trengine}:${POSTGRES_PASSWORD:-trengine}@postgres:5432/${POSTGRES_DB:-trengine}?sslmode=disable
+      DATABASE_URL: postgres://${POSTGRES_USER:-trengine}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-trengine}?sslmode=disable
       AUDIO_DIR: /data/audio
       # MQTT_BROKER_URL comes from .env — no override needed here
     volumes:
@@ -84,7 +91,7 @@ services:
         condition: service_healthy
 ```
 
-> **Note:** `DATABASE_URL` is built automatically from the `POSTGRES_*` variables — set credentials in one place via `.env`. `MQTT_BROKER_URL` is intentionally absent from the `environment` block so it picks up your value from `.env`.
+> **Note:** `DATABASE_URL` is built automatically from the `POSTGRES_*` variables — set credentials in one place via `.env`. `MQTT_BROKER_URL` is intentionally absent from the `environment` block so it picks up your value from `.env`. PostgreSQL has no host port; use `docker compose exec postgres psql -U trengine trengine` to reach it.
 
 ### Broker on the Docker host
 
@@ -119,7 +126,7 @@ curl http://localhost:8080/api/v1/health
 curl -N http://localhost:8080/api/v1/events/stream
 ```
 
-Open http://localhost:8080 for the web UI. Systems and talkgroups auto-populate as trunk-recorder sends data — no manual configuration needed.
+Open http://localhost:8080 for the web UI (on the Docker host; see [Network exposure](./docker.md#network-exposure) to reach it from elsewhere). Systems and talkgroups auto-populate as trunk-recorder sends data — no manual configuration needed.
 
 ## Data
 
@@ -211,8 +218,10 @@ docker compose pull && docker compose up -d
 
 Database and audio files persist in the bind-mounted directories. Check the release notes for any schema migrations.
 
+> **Security defaults changed.** The compose file no longer has a default database password. If your install was created without setting `POSTGRES_PASSWORD`, its database password is still `trengine`; rotate it before switching to the new file. See [Security defaults changed](./docker.md#security-defaults-changed).
+
 ## Troubleshooting
 
 **MQTT not connecting:** Check that the broker address is reachable from inside the container. Run `docker compose logs tr-engine` and look for connection errors. If the broker is on `localhost`, use `host.docker.internal` instead (see above).
 
-**No data appearing:** Verify trunk-recorder is publishing with `mosquitto_sub -h your-broker -t '#' -v`. Check that `MQTT_TOPICS` matches the TR plugin's topic prefix.
+**No data appearing:** Verify trunk-recorder is publishing with `mosquitto_sub -h your-broker -u your-broker-user -P your-broker-password -t '#' -v`. Check that `MQTT_TOPICS` matches the TR plugin's topic prefix.

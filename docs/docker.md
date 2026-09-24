@@ -1,6 +1,6 @@
 # Getting Started — Docker Compose
 
-Run tr-engine with a single command. Docker Compose handles PostgreSQL, the MQTT broker, and tr-engine — you just need trunk-recorder pointed at the broker.
+Run tr-engine with Docker Compose: a few setup commands, then one `docker compose up`. Compose handles PostgreSQL, the MQTT broker, and tr-engine — you just need trunk-recorder pointed at the broker.
 
 > **Don't have the MQTT plugin?** Run this from your trunk-recorder directory — no setup needed:
 > ```bash
@@ -19,19 +19,55 @@ Run tr-engine with a single command. Docker Compose handles PostgreSQL, the MQTT
 - Docker and Docker Compose
 - A running trunk-recorder instance with the [MQTT Status plugin](https://github.com/TrunkRecorder/trunk-recorder-mqtt-status)
 
-## 1. Download and start
+## 1. Download
 
 ```bash
 mkdir tr-engine && cd tr-engine
 curl -sO https://raw.githubusercontent.com/trunk-reporter/tr-engine/master/docker-compose.yml
-docker compose up -d
+mkdir -p mosquitto
+curl -so mosquitto/mosquitto.conf https://raw.githubusercontent.com/trunk-reporter/tr-engine/master/mosquitto/mosquitto.conf
 ```
 
-That's it — one file, one command. On first run:
+## 2. Create credentials
+
+There are no default passwords. Compose refuses to start until `POSTGRES_PASSWORD` and `MQTT_PASSWORD` are set, and the bundled Mosquitto broker rejects clients that don't log in. Run these once, in the same directory:
+
+```bash
+export MQTT_USERNAME=trengine
+export MQTT_PASSWORD=$(openssl rand -hex 16)
+
+# .env: database password + MQTT login for tr-engine
+cat > .env <<EOF
+POSTGRES_PASSWORD=$(openssl rand -hex 24)
+MQTT_USERNAME=$MQTT_USERNAME
+MQTT_PASSWORD=$MQTT_PASSWORD
+EOF
+chmod 600 .env
+
+# mosquitto/passwd: the same MQTT login, hashed for the broker
+docker run --rm -e MQTT_USERNAME -e MQTT_PASSWORD -v "$PWD/mosquitto:/mosquitto/config" eclipse-mosquitto:2 \
+  sh -c 'mosquitto_passwd -c -b /mosquitto/config/passwd "$MQTT_USERNAME" "$MQTT_PASSWORD" && chown mosquitto:mosquitto /mosquitto/config/passwd'
+
+echo "trunk-recorder MQTT login: $MQTT_USERNAME / $MQTT_PASSWORD"
+```
+
+Keep the MQTT password handy; trunk-recorder needs it in step 4. (It is also in `.env`.) The `chown` matters: Mosquitto runs as its own user and can't read a password file owned by root.
+
+## 3. Start
+
+```bash
+docker compose up -d postgres mosquitto tr-engine
+```
+
+`docker-compose.yml` also defines `tr-dashboard` and `caddy` for HTTPS deployments; they need a Caddyfile and aren't part of this quick start (see the [full stack guide](./docker-full-stack.md)).
+
+On first run:
 - PostgreSQL starts and tr-engine auto-applies the database schema
-- Mosquitto starts on port **1883** (anonymous access)
-- tr-engine connects to both and starts listening
-- With no auth variables set, tr-engine starts in open mode. See [Configuration](#configuration) before exposing it outside your LAN.
+- Mosquitto starts on `127.0.0.1:1883` and requires the login you just created
+- tr-engine connects to both and serves the web UI/API on `127.0.0.1:8080`
+- With no auth variables set, tr-engine starts in open mode. See [Configuration](#configuration) before exposing it outside your machine.
+
+PostgreSQL is never published on the host, and every published port listens on `127.0.0.1` (this machine only) until you choose otherwise. See [Network exposure](#network-exposure).
 
 Verify it's running:
 
@@ -39,9 +75,9 @@ Verify it's running:
 curl http://localhost:8080/api/v1/health
 ```
 
-## 3. Point trunk-recorder at the broker
+## 4. Point trunk-recorder at the broker
 
-In your trunk-recorder `config.json`, set the MQTT plugin's broker to your Docker host:
+In your trunk-recorder `config.json`, set the MQTT plugin's broker and the login from step 2:
 
 ```json
 {
@@ -49,16 +85,18 @@ In your trunk-recorder `config.json`, set the MQTT plugin's broker to your Docke
     {
       "name": "MQTT Status",
       "library": "libmqtt_status_plugin.so",
-      "broker": "tcp://YOUR_DOCKER_HOST:1883",
+      "broker": "tcp://localhost:1883",
       "topic": "trengine/feeds",
       "unit_topic": "trengine/units",
-      "console_logs": true
+      "console_logs": true,
+      "username": "trengine",
+      "password": "YOUR_MQTT_PASSWORD"
     }
   ]
 }
 ```
 
-Replace `YOUR_DOCKER_HOST` with the IP or hostname of the machine running Docker. If trunk-recorder runs on the same machine, use `localhost`.
+`tcp://localhost:1883` works when trunk-recorder runs directly on the Docker host. If it runs on another machine, set `MQTT_BIND_IP` in `.env` to the Docker host's LAN (or VPN) address, run `docker compose up -d mosquitto`, and use `tcp://THAT_ADDRESS:1883` as the broker.
 
 **The topic prefix is yours to choose.** tr-engine routes messages based on the trailing segments (e.g. `call_start`, `on`, `message`), not the prefix. Use any prefix you like — `trengine`, `myradio`, `robotastic` — as long as `MQTT_TOPICS` in your `.env` matches with a `/#` wildcard. The default is `#` (all topics), which works fine for a dedicated broker.
 
@@ -66,19 +104,18 @@ Once trunk-recorder connects, systems and talkgroups will auto-populate within s
 
 ### MQTT authentication
 
-By default, the bundled Mosquitto broker allows anonymous connections. To require authentication, set `MQTT_USERNAME` and `MQTT_PASSWORD` in your `.env`:
+The bundled broker always requires a login (`allow_anonymous false` in `mosquitto/mosquitto.conf`). tr-engine logs in with `MQTT_USERNAME`/`MQTT_PASSWORD` from `.env`; the broker checks them against `mosquitto/passwd`. To change the password, update `.env`, regenerate the file with the `docker run ... mosquitto_passwd` command from step 2, update trunk-recorder's `config.json`, then:
 
 ```bash
-MQTT_USERNAME=myuser
-MQTT_PASSWORD=mypassword
+docker compose restart mosquitto && docker compose up -d tr-engine
 ```
 
-The same credentials configure both the broker and tr-engine's connection to it. When set, Mosquitto creates a password file at startup and rejects anonymous connections. Update your trunk-recorder plugin config to match:
+To give trunk-recorder its own login, add a user to the existing file (no `-c`, which would overwrite it):
 
-```json
-"broker": "tcp://YOUR_DOCKER_HOST:1883",
-"mqtt_username": "myuser",
-"mqtt_password": "mypassword"
+```bash
+docker run --rm -v "$PWD/mosquitto:/mosquitto/config" eclipse-mosquitto:2 \
+  sh -c 'mosquitto_passwd -b /mosquitto/config/passwd trunk-recorder "NEW_PASSWORD" && chown mosquitto:mosquitto /mosquitto/config/passwd'
+docker compose restart mosquitto
 ```
 
 ### Raspberry Pi / ARM64 users
@@ -94,20 +131,37 @@ This is a drop-in replacement — same entrypoint, same config format. It includ
 
 If you don't need MQTT, you can skip the plugin entirely and use [file watch mode](#file-watch-mode-watch_dir) instead. You'll lose real-time `call_start` events, unit activity, and recorder state, but call recordings still flow in.
 
-## 4. Access
+## 5. Access
 
 - **Web UI:** http://localhost:8080
 - **API:** http://localhost:8080/api/v1/health
 - **API docs:** http://localhost:8080/docs.html
 
+These addresses work on the Docker host. To reach tr-engine from other machines, see [Network exposure](#network-exposure).
+
+## Network exposure
+
+Every published port is bound to `127.0.0.1` by default. Opening one to other machines is an explicit setting in `.env`:
+
+| Variable | Port | Default | When to change it |
+|----------|------|---------|-------------------|
+| `HTTP_BIND_IP` | tr-engine `8080` | `127.0.0.1` | To use the web UI/API from other machines. Set `ADMIN_PASSWORD` first (see [Securing a public-facing instance](#securing-a-public-facing-instance)). |
+| `MQTT_BIND_IP` | Mosquitto `1883` | `127.0.0.1` | When trunk-recorder runs on another machine. Login is still required. |
+| `BIND_IP` | Caddy `80`/`443` | `127.0.0.1` | Only if you run the `caddy` service; see the [full stack guide](./docker-full-stack.md). |
+
+Use a specific LAN or VPN address (for example `192.168.1.20` or a Tailscale IP) rather than `0.0.0.0` when you can. `0.0.0.0` means every interface, including a public one if the machine has it. PostgreSQL has no host port at all; use `docker compose exec postgres psql -U trengine trengine` to reach it.
+
+After changing any of these, run `docker compose up -d`.
+
 ## Data
 
-Two named volumes persist across restarts and upgrades:
+Data persists across restarts and upgrades in directories next to your `docker-compose.yml`:
 
-| Volume | Contents | Path in container |
-|--------|----------|-------------------|
-| `tr-engine-db` | PostgreSQL data | `/var/lib/postgresql/data` |
-| `tr-engine-audio` | Call audio files | `/data/audio` |
+| Location | Contents | Path in container |
+|----------|----------|-------------------|
+| `./pgdata` | PostgreSQL data | `/var/lib/postgresql/data` |
+| `./audio` | Call audio files | `/data/audio` |
+| `./mosquitto` | Broker config and password file | `/mosquitto/config` |
 
 To back up the database (use your `POSTGRES_USER`/`POSTGRES_DB` if you changed them):
 
@@ -117,13 +171,13 @@ docker compose exec postgres pg_dump -U trengine trengine > backup.sql
 
 ## Configuration
 
-tr-engine works with zero configuration — all defaults are built into `docker-compose.yml`. To customize, create a `.env` file next to your `docker-compose.yml`:
+Apart from the credentials in `.env` (step 2), all defaults are built into `docker-compose.yml`. To customize, add settings to the same `.env` file:
 
 ```bash
 # Download the reference with all options documented
 curl -sO https://raw.githubusercontent.com/trunk-reporter/tr-engine/master/sample.env
-cp sample.env .env
-# Edit .env with your settings, then: docker compose up -d
+# Copy the settings you want from sample.env into .env (don't overwrite .env —
+# it holds your passwords), then: docker compose up -d
 ```
 
 Common settings:
@@ -142,11 +196,15 @@ LOG_LEVEL=info                  # debug, info, warn, error
 Docker-specific settings (ignored when running the binary directly):
 
 ```bash
-# POSTGRES_USER=trengine        # database credentials (default: trengine)
-# POSTGRES_PASSWORD=trengine    # used by both postgres container and DATABASE_URL
+POSTGRES_PASSWORD=...           # REQUIRED, no default (openssl rand -hex 24); used by postgres and DATABASE_URL
+MQTT_USERNAME=trengine          # login for the bundled broker (default: trengine)
+MQTT_PASSWORD=...               # REQUIRED, must match mosquitto/passwd
+# POSTGRES_USER=trengine        # database user (default: trengine)
 # POSTGRES_DB=trengine
 # HTTP_PORT=8080                # host port for the web UI / API
 # MQTT_PORT=1883                # host port for the MQTT broker
+# HTTP_BIND_IP=127.0.0.1        # see Network exposure
+# MQTT_BIND_IP=127.0.0.1
 ```
 
 See [`sample.env`](https://github.com/trunk-reporter/tr-engine/blob/master/sample.env) for all available options with descriptions.
@@ -368,13 +426,11 @@ STREAM_LISTEN=:9123              # enables the UDP listener (disabled if not set
 ```yaml
   tr-engine:
     ports:
-      - "${HTTP_PORT:-8080}:8080"
-      - "${STREAM_PORT:-9123}:9123/udp"
-    environment:
-      - STREAM_LISTEN=:9123
+      - "${HTTP_BIND_IP:-127.0.0.1}:${HTTP_PORT:-8080}:8080"
+      - "${STREAM_BIND_IP:-127.0.0.1}:${STREAM_PORT:-9123}:9123/udp"
 ```
 
-Or set `STREAM_PORT` in `.env` to change the host port mapping (the container-internal port stays 9123).
+The simplestream listener is unauthenticated: anything that can reach the port can inject audio. It listens on `127.0.0.1` by default, which works when trunk-recorder runs on the Docker host (use `"address": "127.0.0.1"` in the plugin config). If trunk-recorder is on another machine, set `STREAM_BIND_IP` in `.env` to the Docker host's LAN or VPN address. Set `STREAM_PORT` to change the host port (the container-internal port stays 9123).
 
 Restart with `docker compose up -d`. Verify via the health endpoint — a new `audio_stream` section appears when streaming is enabled.
 
@@ -411,7 +467,45 @@ Run from the directory containing your `docker-compose.yml`. Changes take effect
 docker compose pull && docker compose up -d
 ```
 
-The database volume persists — your data is safe. If a release includes schema migrations, they'll be noted in the release notes.
+The database persists — your data is safe. If a release includes schema migrations, they'll be noted in the release notes. If you're updating `docker-compose.yml` itself from an older copy, read the next section first.
+
+### Security defaults changed
+
+Older compose files shipped with a default database password (`trengine`), anonymous MQTT, and ports that could end up listening on every interface. The current files change that:
+
+- **No default database password.** Compose refuses to start until `POSTGRES_PASSWORD` is set in `.env`.
+- **PostgreSQL and postgres-exporter are never published** on a public address (no postgres port; exporter on `127.0.0.1` only).
+- **MQTT requires a login.** `mosquitto/mosquitto.conf` sets `allow_anonymous false` and reads `mosquitto/passwd`, and compose refuses to start without `MQTT_PASSWORD`.
+- **Published ports bind to `127.0.0.1` by default** (`HTTP_BIND_IP`, `MQTT_BIND_IP`, `BIND_IP`). If trunk-recorders on other hosts publish to this broker, set `MQTT_BIND_IP` explicitly or they will stop connecting. In `docker-compose.full.yml`, `BIND_IP` is required.
+
+**Existing databases keep their old password.** PostgreSQL only reads `POSTGRES_PASSWORD` when it initializes an empty data directory. If you never set it, your database password is still `trengine`, and putting a new value in `.env` alone will just lock tr-engine out. Rotate the password inside the database first, then store the new value:
+
+```bash
+# 1. With the old stack still running (before replacing docker-compose.yml):
+NEW_PG_PASSWORD=$(openssl rand -hex 24)
+docker compose exec postgres psql -U trengine -d trengine \
+  -c "ALTER ROLE trengine PASSWORD '$NEW_PG_PASSWORD'"
+echo "POSTGRES_PASSWORD=$NEW_PG_PASSWORD" >> .env
+```
+
+Use your `POSTGRES_USER`/`POSTGRES_DB` in place of `trengine` if you changed them. The command connects over the container's local socket, so it doesn't need the old password.
+
+If you've already replaced `docker-compose.yml` and the old containers are still running, compose now refuses to parse the file without the new variables. Prefix the `docker compose exec` line with `POSTGRES_PASSWORD=placeholder MQTT_PASSWORD=placeholder`; `exec` only runs a command in the existing container and changes nothing else. If the stack is already stopped, bring it back up with your old compose file, rotate, then switch.
+
+Check where your data lives before switching files. Older all-in-one compose files kept the database in the `tr-engine-db` named volume; the current file uses `./pgdata`. If yours used the named volume, keep that mapping in the new file (`- tr-engine-db:/var/lib/postgresql/data` under `postgres`, plus `tr-engine-db:` under the top-level `volumes:`). Otherwise PostgreSQL initializes a new, empty database in `./pgdata`.
+
+```bash
+# 2. Create the MQTT login (step 2 of the quick start: MQTT_USERNAME/MQTT_PASSWORD
+#    in .env, mosquitto/passwd, and mosquitto/mosquitto.conf from this repo),
+#    add "username"/"password" to trunk-recorder's MQTT plugin config, then:
+docker compose pull
+docker compose up -d        # or: docker compose up -d postgres mosquitto tr-engine (no Caddy)
+docker compose logs tr-engine --tail 30   # expect "mqtt connected, subscribing", no database errors
+```
+
+Only fall back to keeping the old password (`POSTGRES_PASSWORD=trengine` in `.env`) if you can't rotate right away, and only while PostgreSQL has no published port; rotate it as soon as you can with the `ALTER ROLE` command above.
+
+If you installed with `install.sh`, your generated `tr-engine/docker-compose.yml` is not updated automatically: it still defaults to the `trengine` database password (PostgreSQL is not published there) and publishes port 8080 on all interfaces. Rotate the password as above, then edit that file: replace `${POSTGRES_PASSWORD:-trengine}` with `${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}` (two places) and change the port line to `"${HTTP_BIND_IP:-127.0.0.1}:${HTTP_PORT:-8080}:8080"`.
 
 ## Logs
 

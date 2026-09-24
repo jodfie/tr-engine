@@ -30,7 +30,7 @@ Production deployment with Caddy (automatic HTTPS), Mosquitto (MQTT broker), tr-
     │ :5432  │  │  :1883   │
     └────────┘  └──────────┘
 
-    postgres-exporter :9187  ← Prometheus scrapes this
+    postgres-exporter 127.0.0.1:9187  ← Prometheus scrapes this
 ```
 
 | Service | Purpose | Exposed Port |
@@ -38,14 +38,14 @@ Production deployment with Caddy (automatic HTTPS), Mosquitto (MQTT broker), tr-
 | **caddy** | Reverse proxy, auto HTTPS | `BIND_IP:80`, `BIND_IP:443` |
 | **tr-engine** | API + web UI | internal only (behind Caddy) |
 | **tr-dashboard** | Standalone dashboard frontend | internal only (behind Caddy) |
-| **postgres** | Database | internal only |
-| **mosquitto** | MQTT broker | `BIND_IP:1883` |
-| **postgres-exporter** | Prometheus metrics for PostgreSQL | `BIND_IP:9187` |
+| **postgres** | Database | internal only (never published) |
+| **mosquitto** | MQTT broker (login required) | `127.0.0.1:1883`, or `MQTT_BIND_IP:1883` when you opt in |
+| **postgres-exporter** | Prometheus metrics for PostgreSQL | `127.0.0.1:9187` (unauthenticated, so loopback only) |
 
 ## Prerequisites
 
 - **Docker** and **Docker Compose** (v2+)
-- A **dedicated IP address** (or host) for binding ports — set as `BIND_IP`
+- A **dedicated IP address** (or host) for Caddy's public ports — set as `BIND_IP` (required; use `0.0.0.0` only if you really want every interface)
 - **Two DNS A records** pointing to that IP (for Caddy to issue HTTPS certificates)
 - **trunk-recorder** with the [MQTT Status plugin](https://github.com/TrunkRecorder/trunk-recorder-mqtt-status)
 
@@ -64,8 +64,15 @@ cp sample.env .env
 Edit `.env` and set these values:
 
 ```bash
-# REQUIRED — IP address to bind all external ports to
+# REQUIRED — IP address Caddy serves 80/443 on
 BIND_IP=203.0.113.10
+
+# REQUIRED — database password; there is no default (openssl rand -hex 24)
+POSTGRES_PASSWORD=
+
+# OPTIONAL — only if trunk-recorders on OTHER hosts publish to this broker.
+# Mosquitto listens on 127.0.0.1 unless you set this.
+# MQTT_BIND_IP=203.0.113.10
 
 # REQUIRED — your domain names (replace with your actual domains)
 API_DOMAIN=api.example.com
@@ -90,7 +97,8 @@ Generate secure random secrets:
 # Run these and paste the output into .env
 openssl rand -base64 32   # → ADMIN_PASSWORD
 openssl rand -base64 32   # → AUTH_TOKEN (optional public read token)
-openssl rand -base64 16   # → MQTT_PASSWORD
+openssl rand -hex 24      # → POSTGRES_PASSWORD
+openssl rand -hex 16      # → MQTT_PASSWORD
 ```
 
 > **Important:** For public deployments, set `ADMIN_PASSWORD` so writes require login, role checks, or API keys. `AUTH_TOKEN` is optional in full mode; when set, it acts as a public read token returned by `/auth-init`.
@@ -99,7 +107,9 @@ Key variables:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `BIND_IP` | Yes | IP address for all external port bindings |
+| `BIND_IP` | Yes | Address for Caddy's 80/443; compose refuses to start without it |
+| `POSTGRES_PASSWORD` | Yes | Database password; no default, compose refuses to start without it |
+| `MQTT_BIND_IP` | No | Publish MQTT on this address for remote trunk-recorders (default `127.0.0.1`) |
 | `API_DOMAIN` | Yes | Domain for the tr-engine API + built-in web UI |
 | `DASHBOARD_DOMAIN` | Yes | Domain for the tr-dashboard frontend |
 | `MQTT_USERNAME` | Yes | MQTT broker credentials (shared with trunk-recorder) |
@@ -112,28 +122,22 @@ See [`sample.env`](https://github.com/trunk-reporter/tr-engine/blob/master/sampl
 
 ## 3. Set up Mosquitto
 
-Create the config directory and files:
+Download the broker config (it sets `allow_anonymous false` and reads `mosquitto/passwd`):
 
 ```bash
 mkdir -p mosquitto
+curl -so mosquitto/mosquitto.conf https://raw.githubusercontent.com/trunk-reporter/tr-engine/master/mosquitto/mosquitto.conf
 ```
 
-Create `mosquitto/mosquitto.conf`:
-
-```
-listener 1883
-password_file /mosquitto/config/passwd
-allow_anonymous false
-```
-
-Generate the password file (use the same password you put in `.env`):
+Generate the password file with the same username/password you put in `.env`:
 
 ```bash
-docker run --rm -v ./mosquitto:/mosquitto/config eclipse-mosquitto:2 \
-  mosquitto_passwd -b -c /mosquitto/config/passwd trengine YOUR_MQTT_PASSWORD
+export MQTT_USERNAME=trengine MQTT_PASSWORD='YOUR_MQTT_PASSWORD'
+docker run --rm -e MQTT_USERNAME -e MQTT_PASSWORD -v "$PWD/mosquitto:/mosquitto/config" eclipse-mosquitto:2 \
+  sh -c 'mosquitto_passwd -c -b /mosquitto/config/passwd "$MQTT_USERNAME" "$MQTT_PASSWORD" && chown mosquitto:mosquitto /mosquitto/config/passwd'
 ```
 
-Replace `YOUR_MQTT_PASSWORD` with the value you set for `MQTT_PASSWORD` in `.env`.
+The `chown` matters: Mosquitto runs as its own user and can't read a password file owned by root. Compose refuses to start if `mosquitto/passwd` or `mosquitto/mosquitto.conf` is missing.
 
 ## 4. Set up Caddy
 
@@ -176,7 +180,7 @@ If your MQTT broker needs a DNS name (e.g. for trunk-recorder to connect by host
 |--------|------|-------|-------|
 | `mqtt.example.com` | A | `203.0.113.10` | DNS only (gray cloud) |
 
-MQTT is raw TCP — it cannot be proxied through Cloudflare.
+MQTT is raw TCP — it cannot be proxied through Cloudflare. Mosquitto only listens on that address once you set `MQTT_BIND_IP` in `.env`.
 
 ## 6. Start
 
@@ -202,8 +206,8 @@ docker compose logs tr-engine --tail 20
 # Health check (use the API domain or localhost via docker)
 curl -s https://api.example.com/api/v1/health | python3 -m json.tool
 
-# Test MQTT connection from trunk-recorder's perspective
-mosquitto_pub -h YOUR_BIND_IP -p 1883 -u trengine -P 'YOUR_MQTT_PASSWORD' -t test -m hello
+# Test MQTT login (anonymous clients get "not authorised")
+docker compose exec mosquitto mosquitto_pub -h localhost -u trengine -P 'YOUR_MQTT_PASSWORD' -t test -m hello
 ```
 
 Access your deployment:
@@ -211,6 +215,8 @@ Access your deployment:
 - **Dashboard:** `https://dashboard.example.com`
 
 ## Point trunk-recorder at the broker
+
+Mosquitto only listens on `127.0.0.1` by default. If trunk-recorder runs on the same host, use `tcp://localhost:1883`. If it runs elsewhere, set `MQTT_BIND_IP` in `.env` (for example to `BIND_IP`, or better, a LAN/VPN address), run `docker compose up -d mosquitto`, and use that address below.
 
 In your trunk-recorder `config.json`:
 
@@ -220,7 +226,7 @@ In your trunk-recorder `config.json`:
     {
       "name": "MQTT Status",
       "library": "libmqtt_status_plugin.so",
-      "broker": "tcp://YOUR_BIND_IP:1883",
+      "broker": "tcp://YOUR_MQTT_BIND_IP:1883",
       "topic": "trengine/feeds",
       "unit_topic": "trengine/units",
       "console_logs": true,
@@ -231,7 +237,7 @@ In your trunk-recorder `config.json`:
 }
 ```
 
-Replace `YOUR_BIND_IP` and `YOUR_MQTT_PASSWORD` with your values. Systems and talkgroups auto-populate once trunk-recorder connects.
+Replace `YOUR_MQTT_BIND_IP` and `YOUR_MQTT_PASSWORD` with your values. Systems and talkgroups auto-populate once trunk-recorder connects.
 
 ## Configuration
 
@@ -252,6 +258,8 @@ docker compose pull && docker compose up -d
 ```
 
 All persistent data lives in bind-mounted directories (`pgdata/`, `audio/`) and named volumes (`mosquitto-data`, `caddy-data`). Check release notes for schema migrations.
+
+> **Security defaults changed.** `BIND_IP` and `POSTGRES_PASSWORD` are now required, Mosquitto and postgres-exporter bind to `127.0.0.1` (set `MQTT_BIND_IP` if remote trunk-recorders publish to this broker), and MQTT requires a login. If your database was created without `POSTGRES_PASSWORD`, its password is still `trengine`: rotate it before switching to the new compose file. See [Security defaults changed](./docker.md#security-defaults-changed).
 
 ## Logs
 
@@ -282,10 +290,13 @@ docker compose down -v
 **MQTT authentication failures:** Verify that the username/password in your TR `config.json` matches what's in the Mosquitto password file. The password file is generated separately from `.env` — regenerate it if you change `MQTT_PASSWORD`:
 
 ```bash
-docker run --rm -v ./mosquitto:/mosquitto/config eclipse-mosquitto:2 \
-  mosquitto_passwd -b -c /mosquitto/config/passwd trengine NEW_PASSWORD
+export MQTT_USERNAME=trengine MQTT_PASSWORD='NEW_PASSWORD'
+docker run --rm -e MQTT_USERNAME -e MQTT_PASSWORD -v "$PWD/mosquitto:/mosquitto/config" eclipse-mosquitto:2 \
+  sh -c 'mosquitto_passwd -c -b /mosquitto/config/passwd "$MQTT_USERNAME" "$MQTT_PASSWORD" && chown mosquitto:mosquitto /mosquitto/config/passwd'
 docker compose restart mosquitto
 ```
+
+If Mosquitto logs `Unable to open pwfile`, the file is missing or not owned by the `mosquitto` user; rerun the command above.
 
 **Write operations failing (403):** Log in with an editor/admin user, or use an API key with write access. For upload plugins, create a `tre_...` API key and use it as the plugin API key. The legacy `WRITE_TOKEN` path still works during the deprecation period.
 

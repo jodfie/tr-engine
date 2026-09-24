@@ -49,3 +49,9 @@ debug-receiver-linux
 bin/
 tr-engine
 tr-engine-test
+
+# Mosquitto password file (generated locally, never commit)
+mosquitto/passwd
+
+# Local PostgreSQL data when running compose from a checkout
+/pgdata/
